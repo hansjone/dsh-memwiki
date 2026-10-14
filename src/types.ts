@@ -251,6 +251,8 @@ export interface LintOptions {
   now: Date
   /** Inbox entries: page ID + entry date, for `inbox_backlog`. */
   inboxEntries: { page: string; date: string }[]
+  /** Secret scanner (core/secrets.ts) injected by the caller; omitted → no `secret_suspect` issues. */
+  scanSecrets?: (text: string) => SecretFinding[]
 }
 
 /** One `log.md` entry (§4.4). */
