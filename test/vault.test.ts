@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { initVault, readManifest } from '../src/core/vault.ts'
-import { isGitRepo } from '../src/core/git.ts'
+import { isGitRepo, listUncommitted } from '../src/core/git.ts'
 import { temporary, code } from './helpers.ts'
 
 test('vault init copies templates and creates the complete skeleton', async t => {
@@ -29,4 +29,5 @@ test('manifest rejects missing, corrupt and unsupported schemas; optional init i
   const other = await temporary(t)
   await initVault(other, { git: true })
   assert.equal(await isGitRepo(other), true)
+  assert.deepEqual(await listUncommitted(other), [])
 })

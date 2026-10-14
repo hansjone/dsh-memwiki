@@ -4,7 +4,7 @@ import path from 'node:path'
 import { MemwikiError } from '../types.ts'
 import type { VaultManifest } from '../types.ts'
 import { safeResolve } from './ids.ts'
-import { gitInit } from './git.ts'
+import { commit, gitInit } from './git.ts'
 
 /** Reads the v1 manifest; throws NOT_A_VAULT for missing/invalid markers and UNSUPPORTED_SCHEMA for newer versions. */
 export async function readManifest(dir: string): Promise<VaultManifest> {
@@ -42,5 +42,9 @@ export async function initVault(dir: string, opts: { name?: string; git: boolean
   const templates = new URL('../../templates/vault/', import.meta.url)
   await copyFile(new URL('_guide.md', templates), safeResolve(root, '_guide.md'), constants.COPYFILE_EXCL)
   await copyFile(new URL('gitignore', templates), safeResolve(root, '.gitignore'), constants.COPYFILE_EXCL)
-  if (opts.git) await gitInit(root)
+  if (opts.git) {
+    await gitInit(root)
+    // A fresh vault starts clean, so `lint` does not report the scaffold as uncommitted.
+    await commit(root, ['memwiki.json', '_guide.md', '.gitignore'], { agent: 'memwiki', message: '[memwiki] 初始化记忆库' })
+  }
 }

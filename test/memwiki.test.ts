@@ -116,9 +116,7 @@ test('two vaults sync via bare remote', async t => {
   await exec('git', ['config', 'user.name', 'A'], { cwd: aDir })
   await exec('git', ['config', 'user.email', 'a@test'], { cwd: aDir })
   await exec('git', ['remote', 'add', 'origin', bare], { cwd: aDir })
-  // Commit the vault skeleton so clones are valid vaults.
-  await exec('git', ['add', '-A'], { cwd: aDir })
-  await exec('git', ['-c', 'user.name=A', '-c', 'user.email=a@test', 'commit', '-m', 'init vault'], { cwd: aDir })
+  // initVault already committed the skeleton, so clones are valid vaults.
 
   const wikiA = await Memwiki.open({ ...config(aDir), agent: 'a', git: { autoCommit: true, autoPush: false } })
   t.after(() => wikiA.close())
