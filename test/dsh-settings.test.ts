@@ -3,6 +3,8 @@ import { test } from 'node:test'
 import { readFile, readdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { runInNewContext } from 'node:vm'
+import { Readable } from 'node:stream'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { parse } from 'yaml'
 import { initVault } from '../src/core/vault.ts'
 import { Store } from '../src/core/store.ts'
@@ -11,7 +13,7 @@ import { SecretStore } from '../src/secrets/store.ts'
 import { plainProtector } from '../src/secrets/protector.ts'
 import { MemwikiSettingsService } from '../src/dsh/service.ts'
 import { API } from '../src/dsh/protocol.ts'
-import { allowedRequest, handleSettingsRequest } from '../src/dsh/routes.ts'
+import { allowedRequest, handleSettingsRequest, makeRoutes } from '../src/dsh/routes.ts'
 import { readDshConfig, writeDshConfig, dshConfigFile } from '../src/dsh/config-store.ts'
 import { temporary, config, code } from './helpers.ts'
 
@@ -66,7 +68,7 @@ test('settings status and health read pages/inbox/recent changes without writing
   assert.equal((await handleSettingsRequest(invalid, 'POST', API.lint)).status, 400)
 })
 
-test('settings credential routes never return values, including injected exceptions', async t => {
+test('settings credential list/write/delete/log routes never return values, including injected exceptions', async t => {
   const home = await temporary(t)
   const secrets = new SecretStore({ file: path.join(home, 'private', 'secrets.json'), protector: plainProtector })
   const service = new MemwikiSettingsService({ home, env: {}, secrets })
@@ -92,6 +94,76 @@ test('settings credential routes never return values, including injected excepti
   const exception = await handleSettingsRequest(new MemwikiSettingsService({ home, env: {}, secrets: failing }), 'POST', API.secrets, { name: 'test-admin', scope: '仅测试', value })
   assert.equal(exception.status, 400)
   assert.ok(!JSON.stringify(exception).includes(value))
+})
+
+test('settings reveal returns value and scope and audits every view without logging the value', async t => {
+  const home = await temporary(t)
+  const secrets = new SecretStore({ file: path.join(home, 'private', 'secrets.json'), protector: plainProtector })
+  const service = new MemwikiSettingsService({ home, env: {}, secrets })
+  const value = 'reveal-test-password'
+  await service.setSecret({ name: 'test-admin', scope: '仅 localhost', value })
+  const before = (await service.accessLog()).entries.length
+  for (let i = 0; i < 2; i++) {
+    const revealed = await handleSettingsRequest(service, 'POST', API.reveal, { name: 'test-admin', agent: 'other', purpose: 'other' })
+    assert.equal(revealed.status, 200)
+    assert.deepEqual(revealed.body, { name: 'test-admin', scope: '仅 localhost', value })
+  }
+  const log = await service.accessLog()
+  assert.equal(log.entries.length, before + 2)
+  for (const entry of log.entries.slice(0, 2)) {
+    assert.equal(entry.agent, 'human')
+    assert.equal(entry.purpose, 'DSH 设置页查看')
+    assert.equal(entry.action, 'get')
+    assert.equal(entry.name, 'test-admin')
+  }
+  assert.ok(!JSON.stringify(log).includes(value))
+  assert.ok(!(await readFile(secrets.logFile, 'utf8')).includes(value))
+  const missing = await handleSettingsRequest(service, 'POST', API.reveal, { name: 'missing-admin' })
+  assert.equal(missing.status, 404)
+  assert.deepEqual(missing.body, { code: 'NOT_FOUND', error: '操作失败，请检查参数、配置和文件权限' })
+  for (const body of [{}, { name: 42 }, { name: value + 'INVALID' }]) {
+    const invalid = await handleSettingsRequest(service, 'POST', API.reveal, body)
+    assert.equal(invalid.status, 400)
+    assert.ok(!JSON.stringify(invalid).includes(value))
+  }
+  const failing = new SecretStore({ file: secrets.file, protector: { kind: 'plain', async protect() { return value }, async unprotect() { throw new Error(value) } } })
+  const exception = await handleSettingsRequest(new MemwikiSettingsService({ home, env: {}, secrets: failing }), 'POST', API.reveal, { name: 'test-admin' })
+  assert.equal(exception.status, 400)
+  assert.ok(!JSON.stringify(exception).includes(value))
+  for (const response of [await service.listSecrets(), await service.accessLog(), await service.setSecret({ name: 'test-admin', scope: '仅 localhost', value }), await service.deleteSecret({ name: 'test-admin' })]) {
+    assert.ok(!JSON.stringify(response).includes(value))
+    assert.ok(!JSON.stringify(response).includes('"value"'))
+  }
+})
+
+test('reveal HTTP handler accepts only local same-origin POST and always responds no-store', async t => {
+  const home = await temporary(t)
+  const secrets = new SecretStore({ file: path.join(home, 'private', 'secrets.json'), protector: plainProtector })
+  const service = new MemwikiSettingsService({ home, env: {}, secrets })
+  await service.setSecret({ name: 'test-admin', scope: '仅测试', value: 'http-reveal-password' })
+  const route = makeRoutes(service).find(r => r.path === API.reveal)!
+  const request = async (method: string, address = '127.0.0.1', headers: IncomingMessage['headers'] = { host: 'localhost:123', origin: 'http://localhost:123' }, raw = JSON.stringify({ name: 'test-admin' })) => {
+    const req = Object.assign(Readable.from([raw]), { method, url: API.reveal, headers, socket: { remoteAddress: address } }) as unknown as IncomingMessage
+    const result = { status: 0, headers: {} as Record<string, string>, body: '' }
+    const res = {
+      writeHead(status: number, headers: Record<string, string>) { result.status = status; result.headers = headers },
+      end(body: string) { result.body = body },
+    } as unknown as ServerResponse
+    await route.handler(req, res)
+    assert.equal(result.headers['cache-control'], 'no-store')
+    return result
+  }
+  const before = (await service.accessLog()).entries.length
+  for (const method of ['GET', 'PUT', 'DELETE', 'HEAD', 'OPTIONS']) assert.equal((await request(method)).status, 405)
+  assert.equal((await request('POST', '192.168.1.2')).status, 403)
+  assert.equal((await request('POST', '127.0.0.1', { host: 'localhost:123', origin: 'https://evil.example' })).status, 403)
+  assert.equal((await request('POST', '127.0.0.1', { 'sec-fetch-site': 'cross-site' })).status, 403)
+  assert.equal((await request('POST', '127.0.0.1', undefined, '{bad-json')).status, 400)
+  assert.equal((await service.accessLog()).entries.length, before)
+  const revealed = await request('POST')
+  assert.equal(revealed.status, 200)
+  assert.deepEqual(JSON.parse(revealed.body), { name: 'test-admin', scope: '仅测试', value: 'http-reveal-password' })
+  assert.equal((await service.accessLog()).entries.length, before + 1)
 })
 
 test('settings request guard rejects cross-origin and non-loopback requests', () => {

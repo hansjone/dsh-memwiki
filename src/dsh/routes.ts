@@ -14,7 +14,7 @@ export function allowedRequest(address: string | undefined, headers: IncomingMes
   return true
 }
 
-/** HTTP-free route dispatch, with no arbitrary error/body reflection. No get-value route exists. */
+/** HTTP-free route dispatch; only the explicit POST reveal operation returns a value. */
 export async function handleSettingsRequest(service: MemwikiSettingsService, method: string, pathname: string, body: Record<string, unknown> = {}, limit = 20): Promise<{ status: number; body: unknown }> {
   try {
     let result: unknown
@@ -26,6 +26,7 @@ export async function handleSettingsRequest(service: MemwikiSettingsService, met
     else if (pathname === API.secrets && method === 'POST') result = await service.setSecret(body)
     else if (pathname === API.secrets && method === 'DELETE') result = await service.deleteSecret(body)
     else if (pathname === API.accessLog && method === 'GET') result = await service.accessLog(limit)
+    else if (pathname === API.reveal && method === 'POST') result = await service.revealSecret(body)
     else return { status: 405, body: { error: '不支持此操作' } }
     return { status: 200, body: result }
   } catch (e) {

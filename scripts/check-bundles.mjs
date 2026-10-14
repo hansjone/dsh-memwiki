@@ -29,10 +29,10 @@ assert.deepEqual(host.inject, ['webServer'])
 const routes = [], disposed = []
 let stop
 host.apply({ effect(fn) { stop = fn() }, webServer: { register(route) { routes.push(route); return () => disposed.push(route.path) } } })
-assert.equal(routes.length, 5)
+assert.equal(routes.length, 6)
 assert.ok(routes.every(route => route.path.startsWith('/api/dsh-memwiki/')))
 stop()
-assert.equal(disposed.length, 5)
+assert.equal(disposed.length, 6)
 const api = await import('../lib/index.js')
 assert.equal(typeof api.Memwiki.open, 'function')
 assert.equal(typeof api.SecretStore, 'function')

@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { Store } from '../src/core/store.ts'
 import { initVault } from '../src/core/vault.ts'
-import { computeRev, defaultMeta, serializePage } from '../src/core/page.ts'
+import { computeRev, defaultMeta, localDate, serializePage } from '../src/core/page.ts'
 import { MemwikiError } from '../src/types.ts'
 import type { MetaPatch, WriteOp } from '../src/types.ts'
 import { temporary, config, code } from './helpers.ts'
@@ -26,7 +26,7 @@ test('create, replace, append, edit and meta maintain provenance and accurate to
   assert.equal(first.page.meta.project, 'netx')
   assert.equal(first.page.meta.type, 'project')
   assert.equal(first.page.meta.updated_by, 'codex')
-  assert.equal(first.page.meta.created, new Date().toISOString().slice(0, 10))
+  assert.equal(first.page.meta.created, localDate())
   assert.deepEqual(first.page.meta.sources, [ctx.source])
   assert.equal(first.page.rev, computeRev(await readFile(first.page.path)))
   await assert.rejects(create('PROJECTS/NETX/中文'), code('EXISTS'))

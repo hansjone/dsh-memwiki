@@ -41,7 +41,7 @@
     "build": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && bun run scripts/build-host.mjs && bun run scripts/build-client.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "check:bundles": "node scripts/check-bundles.mjs",
-    "test": "node --test \"test/**/*.test.ts\"",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "dsh": {

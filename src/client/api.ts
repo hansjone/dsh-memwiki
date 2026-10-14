@@ -1,4 +1,4 @@
-import { API, type ConfigView, type HealthResult, type VaultStatus } from '../dsh/protocol.ts'
+import { API, type ConfigView, type HealthResult, type RevealedSecret, type VaultStatus } from '../dsh/protocol.ts'
 import type { SecretAccess, SecretMeta, Protector } from '../secrets/store.ts'
 
 export class MemwikiApi {
@@ -14,5 +14,6 @@ export class MemwikiApi {
   secrets() { return this.request<{ entries: SecretMeta[]; protection: Protector['kind'] }>(API.secrets) }
   async set(name: string, scope: string, value: string) { await this.request(API.secrets, 'POST', { name, scope, value }) }
   async delete(name: string) { await this.request(API.secrets, 'DELETE', { name }) }
+  reveal(name: string) { return this.request<RevealedSecret>(API.reveal, 'POST', { name }) }
   async log() { return (await this.request<{ entries: SecretAccess[] }>(API.accessLog)).entries }
 }

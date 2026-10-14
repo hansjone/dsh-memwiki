@@ -131,6 +131,6 @@ dsh-memwiki secret log --limit 20
 
 ## DSH 设置页
 
-安装插件后打开“设置 → 记忆库”，可保存库目录和自动推送开关，查看库状态、最近 5 条变更和只读体检；凭据区支持新增、更新、删除和访问日志，永远不显示已存的值。配置落盘到 `~/.dsh/dsh-memwiki.json`，保存后重启 DSH 生效；环境变量优先时卡片会提示实际目录。
+安装插件后打开“设置 → 记忆库”，可保存库目录和自动推送开关，查看库状态、最近 5 条变更和只读体检；凭据区支持新增、更新、删除和访问日志。凭据默认不显示，点击“显示”后显示 10 秒，查看会记入访问日志；同一时间只显示一条，切换设置页或窗口失焦时立即隐藏。显示期间可复制，30 秒后若剪贴板仍为该值且可读取则尝试清空。配置落盘到 `~/.dsh/dsh-memwiki.json`，保存后重启 DSH 生效；环境变量优先时卡片会提示实际目录。
 
 `cordis.patch.yml` 同时挂载 MCP 客户端与独立的 `lib/dsh-host.js` 插件；公共 API 仍为 `lib/index.js`。浏览器端 `dsh.client` / `./client` 加载 `lib/client.js`，遵循 Desktop 0.2 的 `settings.section`、`slots` + `locale` 模式。构建保留 tsc，并通过 Bun 打包这两个插件入口（`npm run build` 需要 Bun）。

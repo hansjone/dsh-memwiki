@@ -308,13 +308,14 @@ T2 不依赖 T1 的实现：只用 `types.ts` 里的 `PageRecord`（已解析好
 - 日志字段仅 `at/agent/action/name/purpose`，动作 get/set/delete，get 的用途必填。日志按最新到最旧读取，limit 为 1–1000。写入前先记录操作，保留失败操作的审计轨迹。
 - MCP 四个工具 `memwiki_secret_list/get/set/delete`；取值同时返回 scope 和“只用于 scope，不回显、不落文件或页面”的提醒。仅用户明确要求记住密码时 set。页面敏感扫描报错提示改用凭据库。
 - CLI `secret list|get <name>|set <name> --scope <说明>|rm <name>|log [--limit N]`，支持 `--secrets-file`。set 从无回显终端输入或 stdin 第一行读取，不接受密码参数；get 可带 `--purpose`，明确向 stdout 取值。
+- DSH 桌面设置页默认不显示凭据值；用户点击“显示”后显示 10 秒，查看会记入访问日志（`agent: human`、`purpose: DSH 设置页查看`），日志不含值。手动隐藏、显示另一条、切换设置页、卡片卸载或窗口失焦时立即清除组件中的值；显示期间可复制，30 秒后仅在剪贴板仍为该值且可读取时尝试清空。
 
 ## 12. DSH 设置卡片
 
 配置 `{ dir, autoPush }` 原子保存到 `~/.dsh/dsh-memwiki.json`；命令行、MCP、host 和 patch 共用目录优先级。保存后需重启 DSH，不依赖未确认的 MCP 热重连。
 
-- host 独立入口 `src/dsh/host.ts` → `lib/dsh-host.js`，不替换公共 API `lib/index.js`。patch 用绝对文件入口挂载，client-modules 按所属 package.json 发现 `dsh.client`（普通子路径不会被它扫描）。
-- `/api/dsh-memwiki/config` GET/PUT；`status` GET；`lint` POST；`secrets` GET/POST/DELETE；`secrets/log` GET。路由只接受 loopback 与浏览器同源请求，响应 no-store，无取值路由。HTTP 无关服务和分发函数可单测。
+- host 独立入口 `src/dsh/host.ts` → `lib/dsh-host.js`，公共 API `lib/index.js` 也导出 host 插件。patch 的 host 条目保持包名 `dsh-memwiki`；文件路径会导致 DSH 插件列表读取失败。client-modules 按所属 package.json 发现 `dsh.client`（普通子路径不会被它扫描）。
+- `/api/dsh-memwiki/config` GET/PUT；`status` GET；`lint` POST；`secrets` GET/POST/DELETE；`secrets/log` GET；`secrets/reveal` 仅 POST，请求 `{ name }`，通过 `SecretStore.getWithScope` 返回 `{ name, scope, value }` 并审计查看操作。路由只接受 loopback 与浏览器同源请求，响应 no-store；其他凭据接口仍不返回值，错误信息不含值。HTTP 无关服务和分发函数可单测。
 - 状态/体检直接读 Store、manifest、links、log、git 和 lintRecords；不调用会写索引/启动监视器的 Memwiki.open，不修复、不提交、不推送。
 - client `src/client/index.ts` → `lib/client.js`，`dsh.client` 与 `exports["./client"]` 注册浏览器半。按 trilium 兼容规则只硬注入 slots + locale，注册 settings.section（id=memwiki，与 host 命名空间分开），不用 settings.plugin.item / dsh-client-runtime / settingsScope；挂载失败仅记录固定诊断，避免 GUI 崩溃。
-- 卡片沿用 trilium 的 DSH CSS 变量、输入框和按钮风格，桌面布局，中文；密码输入仅用于写入并在提交时清空，所有响应和凭据列表不含值。
+- 卡片沿用 trilium 的 DSH CSS 变量、输入框和按钮风格，桌面布局，中文；密码输入仅用于写入并在提交时清空，凭据列表只含元数据。用户主动查看后在该行以等宽字体显示明文，同一时间只显示一条；隐藏会移除状态中的值并使未完成的查看请求失效。

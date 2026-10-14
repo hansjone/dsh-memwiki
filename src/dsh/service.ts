@@ -11,7 +11,7 @@ import { scanSecrets } from '../core/secrets.ts'
 import { lintRecords } from '../search/lint.ts'
 import { SecretStore } from '../secrets/store.ts'
 import { dshConfigFile, expandDir, readDshConfig, resolveVaultDir, writeDshConfig } from './config-store.ts'
-import type { ConfigView, HealthResult, VaultStatus } from './protocol.ts'
+import type { ConfigView, HealthResult, RevealedSecret, VaultStatus } from './protocol.ts'
 
 export interface ServiceOptions {
   configFile?: string
@@ -93,6 +93,11 @@ export class MemwikiSettingsService {
     if (typeof body.name !== 'string') throw new MemwikiError('INVALID_ID', '需要凭据名字')
     await (await this.secretStore()).delete(body.name, { agent: 'human' })
     return { deleted: true }
+  }
+  async revealSecret(body: Record<string, unknown>): Promise<RevealedSecret> {
+    if (typeof body.name !== 'string') throw new MemwikiError('INVALID_ID', '需要凭据名字')
+    const secret = await (await this.secretStore()).getWithScope(body.name, { agent: 'human', purpose: 'DSH 设置页查看' })
+    return { name: body.name, scope: secret.scope, value: secret.value }
   }
   async accessLog(limit = 20) { return { entries: await (await this.secretStore()).accessLog(limit) } }
 }
