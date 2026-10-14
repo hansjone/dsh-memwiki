@@ -40,7 +40,7 @@
 
 ### 3.1 页面 ID
 
-页面 ID = 相对库根目录的路径，去掉 `.md`，分隔符统一为 `/`，例如 `projects/netx/发布流程`。
+页面 ID = 相对库根目录的路径，去掉 `.md`，分隔符统一为 `/`，例如 `projects/myapp/发布流程`。
 
 - 合法字符：除 `\ : * ? " < > |` 和控制字符以外的字符；不能以 `/` 开头，不能含 `..` 段、空段，段首尾不能有空格或 `.`。
 - 比较时大小写不敏感（Windows/macOS 文件系统），保存时保留原样。
@@ -60,8 +60,8 @@ created: 2026-10-14
 updated: 2026-10-14T20:31:00+08:00
 updated_by: claude
 verified: 2026-10-14
-sources: [session:claude/d5ac048f, file:netx/scripts/start_netx.ps1]
-project: netx
+sources: [session:claude/7f3a91c2, file:myapp/scripts/start.ps1]
+project: myapp
 ---
 正文……
 ```
@@ -130,7 +130,7 @@ project: netx
 - 多个进程并发时 git 的 `index.lock` 冲突要退避重试（最多 5 次）。
 - 库外部的改动（人在 Obsidian 里编辑、AI 直接改文件）：文件监视发现后防抖 60 秒，统一提交 `[external] 外部编辑 N 个页面`。
 - **多机同步**：`git.autoPush` 开启且库配置了远程时，提交后防抖 30 秒执行一次 `git push`；推送失败（离线、被拒）只记录警告，不影响写入，下次再推。`dsh-memwiki sync` 手动同步：`git pull --rebase --autostash` 后 `push`；变基冲突时中止变基、保持本地不变，并列出冲突文件让用户或 AI 处理。凭据走 git 自己的凭据机制（凭据管理器、SSH key），本工具不保存任何凭据。
-- `log.md` 每次写入追加一行：`- 2026-10-14 20:31 [claude] 更新 [[projects/netx/发布流程]]：补充 Ollama PATH 坑`。按月分节（`## 2026-10`），新的在最上面。
+- `log.md` 每次写入追加一行：`- 2026-10-14 20:31 [claude] 更新 [[projects/myapp/发布流程]]：补充打包时的 PATH 坑`。按月分节（`## 2026-10`），新的在最上面。
 
 ### 4.5 删除与回收站
 
