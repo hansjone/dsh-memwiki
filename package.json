@@ -14,6 +14,14 @@
       "default": "./lib/index.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
+    "./dsh-host": {
+      "types": "./lib/dsh/host.d.ts",
+      "default": "./lib/dsh-host.js"
+    },
+    "./client": {
+      "types": "./lib/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -30,12 +38,18 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "build": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && bun run scripts/build-host.mjs && bun run scripts/build-client.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check:bundles": "node scripts/check-bundles.mjs",
     "test": "node --test \"test/**/*.test.ts\"",
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "dsh": {
+    "client": {
+      "platform": "web",
+      "immediately": false,
+      "inject": ["@deepseek-ai/dsh-client-ui-slots", "@deepseek-ai/dsh-client-locale"]
+    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     }

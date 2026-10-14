@@ -12,6 +12,9 @@ import { initVault } from './core/vault.ts'
 import { Memwiki } from './memwiki.ts'
 import { serveMemwiki } from './mcp/server.ts'
 import { MemwikiError } from './types.ts'
+import { SecretStore } from './secrets/store.ts'
+import { readSecretInput } from './secrets/input.ts'
+import { resolveVaultDir } from './dsh/config-store.ts'
 
 const exec = promisify(execFile)
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -31,8 +34,10 @@ const HELP = `dsh-memwiki — 多个 AI 共用的记忆 wiki
   dsh-memwiki sync [--dir ...]
   dsh-memwiki setup <claude|codex|cursor|dsh> [--write] [--dir ...]
   dsh-memwiki install-skill [--target claude|codex|cursor|dsh]...
+  dsh-memwiki secret list | get <name> | set <name> --scope <说明> | rm <name> | log [--limit N]
+  secret set 只从不回显终端或 stdin 第一行读密码，禁止在命令行传值。
 
-全局选项：--dir、--agent、--no-git、--push / --no-push、--budget
+全局选项：--dir、--agent、--no-git、--push / --no-push、--budget、--secrets-file
 `
 
 function fail(err: unknown): never {
@@ -89,7 +94,7 @@ async function readJsonForMerge(file: string): Promise<Record<string, unknown>> 
 }
 
 async function setupClient(client: string, opts: { write: boolean; dir?: string }) {
-  const vault = opts.dir ?? process.env.MEMWIKI_DIR ?? path.join(os.homedir(), 'memwiki')
+  const vault = await resolveVaultDir({ dir: opts.dir })
   const agents = { claude: 'claude', codex: 'codex', cursor: 'cursor', dsh: 'dsh' } as const
   if (!(client in agents)) throw new Error(`未知客户端：${client}（claude|codex|cursor|dsh）`)
   const agent = agents[client as keyof typeof agents]
@@ -230,45 +235,72 @@ async function installSkill(targets: string[]) {
 }
 
 async function main() {
-  const { values, positionals } = parseArgs({
-    args: process.argv.slice(2),
-    allowPositionals: true,
-    strict: false,
-    options: {
-      dir: { type: 'string' },
-      agent: { type: 'string' },
-      project: { type: 'string' },
-      name: { type: 'string' },
-      budget: { type: 'string' },
-      fix: { type: 'boolean', default: false },
-      write: { type: 'boolean', default: false },
-      git: { type: 'boolean', default: true },
-      push: { type: 'boolean' },
-      'no-git': { type: 'boolean', default: false },
-      'no-push': { type: 'boolean', default: false },
-      target: { type: 'string', multiple: true },
-      help: { type: 'boolean', short: 'h', default: false },
-    },
-  })
-
-  if (values.help || positionals.length === 0) {
-    console.log(HELP)
-    process.exit(0)
-  }
-
-  const git = values['no-git'] ? false : (values.git as boolean)
-  const pushFlag = values['no-push'] ? false : (values.push === true ? true : values.push === false ? false : undefined)
-  const flags = {
-    dir: values.dir as string | undefined,
-    agent: values.agent as string | undefined,
-    git,
-    push: pushFlag,
-    budget: values.budget !== undefined ? Number(values.budget) : undefined,
-  }
-
-  const cmd = positionals[0]
-
+  // Strict parsing and fixed errors on the credential path: never echo an unknown
+  // positional or flag (it might be a password supplied by mistake).
+  const secretCommand = process.argv.slice(2).includes('secret')
   try {
+    const { values, positionals } = parseArgs({
+      args: process.argv.slice(2),
+      allowPositionals: true,
+      strict: secretCommand,
+      options: {
+        dir: { type: 'string' },
+        agent: { type: 'string' },
+        project: { type: 'string' },
+        name: { type: 'string' },
+        budget: { type: 'string' },
+        'secrets-file': { type: 'string' },
+        scope: { type: 'string' },
+        purpose: { type: 'string' },
+        limit: { type: 'string' },
+        fix: { type: 'boolean', default: false },
+        write: { type: 'boolean', default: false },
+        git: { type: 'boolean', default: true },
+        push: { type: 'boolean' },
+        'no-git': { type: 'boolean', default: false },
+        'no-push': { type: 'boolean', default: false },
+        target: { type: 'string', multiple: true },
+        help: { type: 'boolean', short: 'h', default: false },
+      },
+    })
+
+    if (values.help || positionals.length === 0) {
+      console.log(HELP)
+      process.exit(0)
+    }
+
+    const git = values['no-git'] ? false : (values.git as boolean)
+    const pushFlag = values['no-push'] ? false : (values.push === true ? true : values.push === false ? false : undefined)
+    const flags = {
+      dir: values.dir as string | undefined,
+      agent: values.agent as string | undefined,
+      git,
+      push: pushFlag,
+      budget: values.budget !== undefined ? Number(values.budget) : undefined,
+    }
+
+    const cmd = positionals[0]
+
+    if (cmd === 'secret') {
+      const sub = positionals[1]
+      const name = positionals[2]
+      if (!['list', 'get', 'set', 'rm', 'log'].includes(sub) ||
+          positionals.length !== (['get', 'set', 'rm'].includes(sub) ? 3 : 2)) throw new MemwikiError('INVALID_META', '凭据命令用法无效；密码只能从终端或 stdin 输入')
+      const store = new SecretStore({ file: values['secrets-file'] as string | undefined, vaultDir: await resolveVaultDir({ dir: flags.dir }) })
+      const agent = flags.agent ?? process.env.MEMWIKI_AGENT ?? 'human'
+      if (sub === 'list') {
+        console.log(`保护方式：${store.protector.kind === 'dpapi' ? 'Windows DPAPI（CurrentUser）' : '明文文件（0600 权限保护）'}`)
+        console.log(JSON.stringify(await store.list(), null, 2))
+      } else if (sub === 'get') {
+        console.log(await store.get(name, { agent, purpose: values.purpose as string ?? '命令行读取凭据' }))
+      } else if (sub === 'set') {
+        if (typeof values.scope !== 'string' || !values.scope.trim()) throw new MemwikiError('INVALID_META', 'secret set 必须指定 --scope')
+        await store.set(name, await readSecretInput(), values.scope, { agent })
+        console.log('凭据已保存（页面仅写 secret:<名字> 引用）')
+      } else if (sub === 'rm') { await store.delete(name, { agent }); console.log('凭据已删除') }
+      else console.log(JSON.stringify(await store.accessLog(values.limit === undefined ? 20 : Number(values.limit)), null, 2))
+      return
+    }
     if (cmd === 'init') {
       const dir = path.resolve(positionals[1] ?? flags.dir ?? path.join(os.homedir(), 'memwiki'))
       await initVault(dir, { name: values.name as string | undefined, git })
@@ -291,7 +323,7 @@ async function main() {
     if (cmd === 'serve') {
       const wiki = await openWiki(flags)
       process.on('SIGINT', () => { void wiki.close().then(() => process.exit(0)) })
-      await serveMemwiki(wiki)
+      await serveMemwiki(wiki, new SecretStore({ file: values['secrets-file'] as string | undefined, vaultDir: wiki.config.dir }))
       return
     }
 
@@ -337,6 +369,7 @@ async function main() {
       await wiki.close()
     }
   } catch (e) {
+    if (secretCommand) fail(new MemwikiError(e instanceof MemwikiError ? e.code : 'INVALID_META', '凭据命令失败，请检查参数和配置；密码只能从终端或 stdin 输入'))
     fail(e)
   }
 }

@@ -44,7 +44,7 @@ dsh-memwiki install-skill
 
 ## 配置项
 
-优先级：命令行 > 环境变量 > 库内 `memwiki.json` 的 `settings` > 默认值。
+库目录优先级：`--dir` > `MEMWIKI_DIR` > `~/.dsh/dsh-memwiki.json` 的 `dir` > `~/memwiki`。自动推送：命令行 > 环境变量 > DSH 设置文件的 `autoPush` > 库设置 > 默认关闭；其他设置仍是命令行 > 环境变量 > 库设置 > 默认值。
 
 | 设置 | 命令行 | 环境变量 | 默认 |
 |---|---|---|---|
@@ -103,10 +103,34 @@ dsh-memwiki install-skill [--target ...]
 
 **CONFLICT**：别人或另一个进程改过页面。重新 `memwiki_read` 拿最新 `rev` 再写。
 
-**SECRET_DETECTED**：正文或页头命中密钥规则，不会写入。改成“去哪里拿”，不要贴密钥。
+**SECRET_DETECTED**：正文或页头命中密钥规则，不会写入。确需保存低风险凭据时用 `memwiki_secret_set`，页面写 `secret:<名字>` 引用。
 
 **多机同步**：同一 git 远程下，开 `autoPush` 或定期 `dsh-memwiki sync`。冲突需人工处理列出的文件。
 
 **外部编辑**：在 Obsidian 里改文件会被监视；约 60 秒后统一提交 `[external] …`。
 
 **DSH 找不到 cli.js**：用 `dsh-memwiki setup dsh` 打印带绝对路径的条目，合并进 `$DSH_HOME/cordis.patch.yml`，并确认 `MEMWIKI_DIR`。
+
+## 本机凭据库
+
+密码和 token 不能写进 wiki 页面（会进入 git 历史、目录和检索）。仅本地开发、测试账号、内网设备等低风险凭据可存入独立凭据库；银行、邮箱、主账号、生产环境密码不要存。页面只写 `secret:netx-local-admin`。
+
+默认文件 `~/.memwiki/secrets.json`，可用 `MEMWIKI_SECRETS_FILE` 或 `--secrets-file` 覆盖；文件必须在 wiki 目录之外，不进 git、不同步。默认访问日志为同目录的 `secrets-access.log`，只记录时间、agent、动作、名字和用途，不含值。
+
+Windows 用 DPAPI CurrentUser 加密，绑定当前 Windows 用户；换用户或机器不能解密，DPAPI 不可用时直接失败，不退回明文。其他平台第一版**明文存储**，靠文件 0600 / 父目录 0700 权限保护。列表不会返回值。
+
+```text
+dsh-memwiki secret set netx-local-admin --scope "仅用于 localhost 的 netx 开发实例"
+dsh-memwiki secret list
+dsh-memwiki secret get netx-local-admin --purpose "登录 localhost 开发实例"
+dsh-memwiki secret rm netx-local-admin
+dsh-memwiki secret log --limit 20
+```
+
+`set` 交互输入不回显；管道输入只读 stdin 第一行，密码不能放在命令行参数中。`get` 是明确请求取值的命令，会向 stdout 输出值，请留意接收端。MCP 的 `memwiki_secret_list/get/set/delete` 共用同一凭据库；`get` 必须给 `purpose`，只按 `scope` 使用，不回显给用户、不写进任何文件或页面。`set` 只在用户明确要求记住密码时使用。
+
+## DSH 设置页
+
+安装插件后打开“设置 → 记忆库”，可保存库目录和自动推送开关，查看库状态、最近 5 条变更和只读体检；凭据区支持新增、更新、删除和访问日志，永远不显示已存的值。配置落盘到 `~/.dsh/dsh-memwiki.json`，保存后重启 DSH 生效；环境变量优先时卡片会提示实际目录。
+
+`cordis.patch.yml` 同时挂载 MCP 客户端与独立的 `lib/dsh-host.js` 插件；公共 API 仍为 `lib/index.js`。浏览器端 `dsh.client` / `./client` 加载 `lib/client.js`，遵循 Desktop 0.2 的 `settings.section`、`slots` + `locale` 模式。构建保留 tsc，并通过 Bun 打包这两个插件入口（`npm run build` 需要 Bun）。

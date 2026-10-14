@@ -129,7 +129,7 @@ project: myapp
 - 库是 git 仓库且 `git.autoCommit` 为真时，每次写入提交一次：只 `add` 本次涉及的文件（页面、`index.md`、`log.md`、移动/删除的源路径），提交信息 `[<agent>] <动作> <页面ID>：<reason>`，作者名 `<agent> (memwiki)`，邮箱 `<agent>@memwiki.local`。
 - 多个进程并发时 git 的 `index.lock` 冲突要退避重试（最多 5 次）。
 - 库外部的改动（人在 Obsidian 里编辑、AI 直接改文件）：文件监视发现后防抖 60 秒，统一提交 `[external] 外部编辑 N 个页面`。
-- **多机同步**：`git.autoPush` 开启且库配置了远程时，提交后防抖 30 秒执行一次 `git push`；推送失败（离线、被拒）只记录警告，不影响写入，下次再推。`dsh-memwiki sync` 手动同步：`git pull --rebase --autostash` 后 `push`；变基冲突时中止变基、保持本地不变，并列出冲突文件让用户或 AI 处理。凭据走 git 自己的凭据机制（凭据管理器、SSH key），本工具不保存任何凭据。
+- **多机同步**：`git.autoPush` 开启且库配置了远程时，提交后防抖 30 秒执行一次 `git push`；推送失败（离线、被拒）只记录警告，不影响写入，下次再推。`dsh-memwiki sync` 手动同步：`git pull --rebase --autostash` 后 `push`；变基冲突时中止变基、保持本地不变，并列出冲突文件让用户或 AI 处理。git 同步凭据走 git 自己的凭据机制（凭据管理器、SSH key），本工具不托管这类凭据；低风险开发/测试凭据另见 §11。
 - `log.md` 每次写入追加一行：`- 2026-10-14 20:31 [claude] 更新 [[projects/myapp/发布流程]]：补充打包时的 PATH 坑`。按月分节（`## 2026-10`），新的在最上面。
 
 ### 4.5 删除与回收站
@@ -199,7 +199,7 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 
 ## 7. 配置
 
-解析优先级（高到低）：命令行参数 → 环境变量 → 库内 `memwiki.json` 的 `settings` → 默认值。
+库目录：命令行 `--dir` → 环境变量 `MEMWIKI_DIR` → `~/.dsh/dsh-memwiki.json` 的 `dir` → `~/memwiki`。自动推送：命令行 → 环境变量 → DSH 设置文件的 `autoPush` → 库设置 → 默认关闭。其余配置仍为命令行 → 环境变量 → 库内 `memwiki.json` 的 `settings` → 默认值。
 
 | 设置 | 命令行 | 环境变量 | 默认 |
 |---|---|---|---|
@@ -295,3 +295,26 @@ T2 不依赖 T1 的实现：只用 `types.ts` 里的 `PageRecord`（已解析好
 - 测试用 `node --test`，每个模块有对应的 `test/*.test.ts`；文件系统相关的测试在临时目录里跑。
 - Windows、macOS、Linux 都要能用：路径一律经过规范化，不假设分隔符。
 - 公共函数写 JSDoc，说明契约（输入、输出、错误码），不写实现过程。
+
+## 11. 凭据库
+
+凭据与 Markdown 库严格分开：页面只写 `secret:<名字>`，密码/token 不进入页面、git、检索、目录或页面日志。只允许本地开发、测试账号、内网设备等低风险用途；银行、邮箱、主账号和生产环境密码不要存。
+
+- 默认 `~/.memwiki/secrets.json`；`MEMWIKI_SECRETS_FILE` / `--secrets-file` 可覆盖，禁止放进 wiki（包括符号链接指向库内）。覆盖路径的访问日志也放在其旁边，默认即 `~/.memwiki/secrets-access.log`。
+- 文件格式 `{ version: 1, protection: 'dpapi' | 'plain', entries: [...] }`；每条 `{ name, scope, value, created, updated, updated_by }`，名字规则 `^[a-z0-9][a-z0-9._-]{1,63}$`，用途必填。
+- Windows 的 `value` 是 DPAPI CurrentUser 密文 base64。固定 PowerShell 脚本通过子进程 stdin/stdout 传递数据，密码不出现在命令行；stderr 不转发，加密失败不退回明文。其他平台第一版为明文，以文件 0600、父目录 0700 保护。保护方式写入文件以防误解码。
+- `Protector` 提供 `kind`、异步 `protect(plain)` / `unprotect(stored)`，可注入测试实现和将来的加密后端。
+- `SecretStore` 提供 `list/get/set/delete/accessLog`；列表及写入结果只含元数据。读写复用 `core/lock.ts`，锁在凭据文件旁边的 `.memwiki/locks`；凭据和 JSON Lines 日志均复用 `core/fs.ts` 原子写。错误固定脱敏，不带底层异常或 cause。
+- 日志字段仅 `at/agent/action/name/purpose`，动作 get/set/delete，get 的用途必填。日志按最新到最旧读取，limit 为 1–1000。写入前先记录操作，保留失败操作的审计轨迹。
+- MCP 四个工具 `memwiki_secret_list/get/set/delete`；取值同时返回 scope 和“只用于 scope，不回显、不落文件或页面”的提醒。仅用户明确要求记住密码时 set。页面敏感扫描报错提示改用凭据库。
+- CLI `secret list|get <name>|set <name> --scope <说明>|rm <name>|log [--limit N]`，支持 `--secrets-file`。set 从无回显终端输入或 stdin 第一行读取，不接受密码参数；get 可带 `--purpose`，明确向 stdout 取值。
+
+## 12. DSH 设置卡片
+
+配置 `{ dir, autoPush }` 原子保存到 `~/.dsh/dsh-memwiki.json`；命令行、MCP、host 和 patch 共用目录优先级。保存后需重启 DSH，不依赖未确认的 MCP 热重连。
+
+- host 独立入口 `src/dsh/host.ts` → `lib/dsh-host.js`，不替换公共 API `lib/index.js`。patch 用绝对文件入口挂载，client-modules 按所属 package.json 发现 `dsh.client`（普通子路径不会被它扫描）。
+- `/api/dsh-memwiki/config` GET/PUT；`status` GET；`lint` POST；`secrets` GET/POST/DELETE；`secrets/log` GET。路由只接受 loopback 与浏览器同源请求，响应 no-store，无取值路由。HTTP 无关服务和分发函数可单测。
+- 状态/体检直接读 Store、manifest、links、log、git 和 lintRecords；不调用会写索引/启动监视器的 Memwiki.open，不修复、不提交、不推送。
+- client `src/client/index.ts` → `lib/client.js`，`dsh.client` 与 `exports["./client"]` 注册浏览器半。按 trilium 兼容规则只硬注入 slots + locale，注册 settings.section（id=memwiki，与 host 命名空间分开），不用 settings.plugin.item / dsh-client-runtime / settingsScope；挂载失败仅记录固定诊断，避免 GUI 崩溃。
+- 卡片沿用 trilium 的 DSH CSS 变量、输入框和按钮风格，桌面布局，中文；密码输入仅用于写入并在提交时清空，所有响应和凭据列表不含值。

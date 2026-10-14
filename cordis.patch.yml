@@ -1,9 +1,20 @@
-# dsh-memwiki bundle patch：插入 MCP 客户端条目。
+# dsh-memwiki bundle patch：插入独立 host 和 MCP 客户端条目。
 # 安装：dsh plugin add dsh-memwiki（或本地路径）。
-# 库目录：优先环境变量 MEMWIKI_DIR；未设置时默认 ~/memwiki。
+# 库目录：MEMWIKI_DIR > ~/.dsh/dsh-memwiki.json 的 dir > ~/memwiki。
 # command 用 node 绝对路径；args 通过 createRequire 解析本包 lib/cli.js。
 # 若运行时 resolve 失败，请用 `dsh-memwiki setup dsh --write` 把绝对路径写入 $DSH_HOME/cordis.patch.yml。
 - insert:
+    # 文件路径入口使 client-modules 按最近 package.json 发现本包 dsh.client；
+    # 普通 dsh-memwiki/dsh-host 子路径不会被 client-modules 扫描。
+    - id: memwiki-host
+      name: !!js >-
+        (() => {
+          const path = process.getBuiltinModule('node:path')
+          const { createRequire } = process.getBuiltinModule('node:module')
+          const { pathToFileURL } = process.getBuiltinModule('node:url')
+          const req = createRequire(pathToFileURL(path.join(process.cwd(), 'package.json')).href)
+          return path.join(path.dirname(req.resolve('dsh-memwiki/package.json')), 'lib', 'dsh-host.js')
+        })()
     - id: memwiki
       name: '@deepseek-ai/dsh-mcp-client'
       config:
@@ -22,8 +33,17 @@
         env:
           MEMWIKI_AGENT: dsh
           MEMWIKI_DIR: !!js >-
-            process.env.MEMWIKI_DIR?.trim()
-            || process.getBuiltinModule('node:path').join(
-              process.getBuiltinModule('node:os').homedir(),
-              'memwiki'
-            )
+            (() => {
+              const path = process.getBuiltinModule('node:path')
+              const fs = process.getBuiltinModule('node:fs')
+              const home = process.getBuiltinModule('node:os').homedir()
+              const file = path.join(home, '.dsh', 'dsh-memwiki.json')
+              let dir
+              if (!process.env.MEMWIKI_DIR?.trim() && fs.existsSync(file)) {
+                const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
+                if (saved.dir !== undefined && (typeof saved.dir !== 'string' || !saved.dir.trim())) throw new Error('记忆库目录设置无效')
+                dir = saved.dir?.trim()
+              }
+              const raw = process.env.MEMWIKI_DIR?.trim() || dir || path.join(home, 'memwiki')
+              return path.resolve(raw === '~' ? home : /^~[\\/]/.test(raw) ? path.join(home, raw.slice(2)) : raw)
+            })()

@@ -5,6 +5,7 @@ import path from 'node:path'
 import { resolveConfig } from '../src/config.ts'
 import { initVault } from '../src/core/vault.ts'
 import { temporary, code } from './helpers.ts'
+import { dshConfigFile, writeDshConfig } from '../src/dsh/config-store.ts'
 
 test('configuration defaults and CLI > environment > manifest precedence', async t => {
   const dir = await temporary(t)
@@ -24,6 +25,21 @@ test('configuration defaults and CLI > environment > manifest precedence', async
   assert.equal(config.staleDays, 15)
   assert.equal(config.secretScan, false)
   await assert.rejects(resolveConfig({ dir, env: { MEMWIKI_CONTEXT_BUDGET: 'bad' } }), code('INVALID_META'))
+})
+
+test('vault directory CLI > environment > DSH JSON > home default and persisted autoPush', async t => {
+  const home = await temporary(t)
+  const defaultDir = path.join(home, 'memwiki'), savedDir = path.join(home, 'saved'), envDir = path.join(home, 'env'), cliDir = path.join(home, 'cli')
+  for (const dir of [defaultDir, savedDir, envDir, cliDir]) await initVault(dir, { git: false })
+  assert.equal((await resolveConfig({ home, env: {} })).dir, defaultDir)
+  await writeDshConfig({ dir: '~/saved', autoPush: true }, dshConfigFile(home))
+  const saved = await resolveConfig({ home, env: {} })
+  assert.equal(saved.dir, savedDir)
+  assert.equal(saved.git.autoPush, true)
+  assert.equal((await resolveConfig({ home, env: { MEMWIKI_DIR: envDir } })).dir, envDir)
+  assert.equal((await resolveConfig({ home, dir: cliDir, env: { MEMWIKI_DIR: envDir } })).dir, cliDir)
+  assert.equal((await resolveConfig({ home, env: { MEMWIKI_GIT_PUSH: '0' } })).git.autoPush, false)
+  assert.equal((await resolveConfig({ home, push: false, env: {} })).git.autoPush, false)
 })
 
 test('autoCommit defaults to repository presence and invalid vaults are rejected', async t => {

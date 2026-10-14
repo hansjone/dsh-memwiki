@@ -6,19 +6,24 @@ import { initVault } from '../src/core/vault.ts'
 import { Memwiki } from '../src/memwiki.ts'
 import { createMemwikiServer } from '../src/mcp/server.ts'
 import { temporary, config } from './helpers.ts'
+import { SecretStore } from '../src/secrets/store.ts'
+import { plainProtector } from '../src/secrets/protector.ts'
+import path from 'node:path'
 
 async function connect(t: Parameters<typeof temporary>[0]) {
   const dir = await temporary(t)
   await initVault(dir, { git: false })
   const wiki = await Memwiki.open({ ...config(dir), agent: 'cursor', git: { autoCommit: false } })
   t.after(() => wiki.close())
-  const server = createMemwikiServer(wiki)
+  const secretsDir = await temporary(t)
+  const secrets = new SecretStore({ file: path.join(secretsDir, 'secrets.json'), protector: plainProtector, vaultDir: dir })
+  const server = createMemwikiServer(wiki, secrets)
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: 'test', version: '0.0.0' })
   await server.connect(serverTransport)
   await client.connect(clientTransport)
   t.after(async () => { await client.close(); await server.close() })
-  return { wiki, client, dir }
+  return { wiki, client, dir, secrets }
 }
 
 async function call(client: Client, name: string, args: Record<string, unknown> = {}) {
@@ -93,4 +98,35 @@ test('MCP tools cover happy path and error codes', async t => {
   const missing = await call(client, 'memwiki_read', { page: '不存在的页面xyz' })
   assert.equal(missing.isError, true)
   assert.match(missing.text, /^NOT_FOUND/)
+})
+
+test('MCP four secret tools protect metadata outputs, require purpose and redirect rejected wiki writes', async t => {
+  const { client, secrets } = await connect(t)
+  const tools = await client.listTools()
+  for (const suffix of ['list', 'get', 'set', 'delete']) assert.ok(tools.tools.some(tool => tool.name === `memwiki_secret_${suffix}`))
+  assert.ok(Buffer.byteLength(client.getInstructions() ?? '') <= 1536)
+  const value = 'unique-mcp-password-987654'
+  const set = await call(client, 'memwiki_secret_set', { name: 'test-admin', value, scope: '仅用于测试' })
+  assert.equal(set.isError, false)
+  assert.ok(!set.text.includes(value))
+  const list = await call(client, 'memwiki_secret_list')
+  assert.match(list.text, /test-admin/)
+  assert.ok(!list.text.includes(value))
+  assert.ok(!list.text.includes('"value"'))
+  const missingPurpose = await call(client, 'memwiki_secret_get', { name: 'test-admin' })
+  assert.equal(missingPurpose.isError, true)
+  const get = await call(client, 'memwiki_secret_get', { name: 'test-admin', purpose: '本地测试登录' })
+  assert.equal(get.isError, false)
+  assert.match(get.text, /不要回显给用户/)
+  assert.ok(get.text.includes(value))
+  assert.equal((await secrets.accessLog())[0].purpose, '本地测试登录')
+  assert.ok(!JSON.stringify(await secrets.accessLog()).includes(value))
+  const blocked = await call(client, 'memwiki_write', { page: 'topics/password', mode: 'create', title: '测试', summary: '扫描拒绝', body: `password=${value}`, reason: '验证' })
+  assert.equal(blocked.isError, true)
+  assert.match(blocked.text, /memwiki_secret_set/)
+  assert.ok(!blocked.text.includes(value))
+  const deleted = await call(client, 'memwiki_secret_delete', { name: 'test-admin' })
+  assert.equal(deleted.isError, false)
+  assert.ok(!deleted.text.includes(value))
+  assert.match((await call(client, 'memwiki_secret_get', { name: 'test-admin', purpose: '确认删除' })).text, /NOT_FOUND/)
 })

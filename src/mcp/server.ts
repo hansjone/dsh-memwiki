@@ -4,11 +4,12 @@ import * as z from 'zod'
 import type { Memwiki } from '../memwiki.ts'
 import type { MetaPatch, PageType, WriteOp } from '../types.ts'
 import { MemwikiError, PAGE_TYPES } from '../types.ts'
+import { SecretStore } from '../secrets/store.ts'
 
 const INSTRUCTIONS = `共享记忆 wiki 规则：
 1. 任务开始调用 memwiki_context；写入前先 memwiki_search。
 2. 更新已有页面优于新建；一个事实一个归属。
-3. 不写密钥/密码/token；读到旧内容先核实再改。
+3. 页面不写密码/token；低风险凭据用凭据库，页面写 secret:<名字> 引用；读到旧内容先核实再改。
 4. CONFLICT 时重新 memwiki_read，在最新 rev 上再写。
 5. 拿不准归属用 memwiki_remember 进 inbox。`
 
@@ -21,7 +22,8 @@ function formatError(err: unknown): ReturnType<typeof text> {
     const show = (v: unknown): string => Array.isArray(v) ? v.map(show).join('|')
       : v !== null && typeof v === 'object' ? Object.entries(v).map(([k, x]) => `${k}:${show(x)}`).join(' ') : String(v)
     const extra = err.details ? '，' + Object.entries(err.details).map(([k, v]) => `${k}=${show(v)}`).join('，') : ''
-    return text(`${err.code}：${err.message}${extra}`, true)
+    const hint = err.code === 'SECRET_DETECTED' ? '。如果确实需要保存，用 memwiki_secret_set 存进凭据库，页面里写 secret:<名字>' : ''
+    return text(`${err.code}：${err.message}${extra}${hint}`, true)
   }
   return text(`ERROR：${err instanceof Error ? err.message : String(err)}`, true)
 }
@@ -51,11 +53,39 @@ function formatMeta(page: { meta: Record<string, unknown>; rev: string }): strin
 }
 
 /** Builds an MCP server bound to an open Memwiki instance (§8.1). */
-export function createMemwikiServer(wiki: Memwiki): McpServer {
+export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ vaultDir: wiki.config.dir })): McpServer {
   const server = new McpServer(
     { name: 'memwiki', version: '0.1.0' },
     { instructions: INSTRUCTIONS, capabilities: { tools: {}, prompts: {} } },
   )
+
+  const secretNotice = '仅保存本地开发、测试账号、内网设备等低风险凭据；银行、邮箱、主账号和生产环境密码不要存。'
+  const secretCall = async (fn: () => Promise<unknown>) => {
+    try { return text(JSON.stringify(await fn(), null, 2)) }
+    catch (e) {
+      // Never render arbitrary exceptions from a protector or store.
+      return text(`${e instanceof MemwikiError ? e.code : 'ERROR'}：凭据操作失败`, true)
+    }
+  }
+  server.registerTool('memwiki_secret_list', {
+    description: `列出本机凭据名字、用途和时间，不返回值。${secretNotice}非 Windows 第一版为明文文件，以 0600 权限保护。`,
+    inputSchema: {},
+  }, () => secretCall(async () => ({ entries: await secrets.list(), protection: secrets.protector.kind, notice: secrets.protector.kind === 'plain' ? '当前平台为明文文件存储，以 0600 文件权限保护。' : 'Windows DPAPI（CurrentUser）' })))
+  server.registerTool('memwiki_secret_get', {
+    description: `按名字取凭据，purpose 必填并记访问日志。只用于 scope 说明的用途，不要回显给用户、不要写进任何文件或页面。${secretNotice}`,
+    inputSchema: { name: z.string(), purpose: z.string().trim().min(1).describe('本次取凭据的具体用途，记入访问日志') },
+  }, ({ name, purpose }) => secretCall(async () => {
+    const { value, scope } = await secrets.getWithScope(name, { agent: wiki.config.agent, purpose })
+    return { value, scope, reminder: '只用于 scope 说明的用途，不要回显给用户、不要写进任何文件或页面。' }
+  }))
+  server.registerTool('memwiki_secret_set', {
+    description: `仅在用户在对话里明确要求“帮我记住这个密码”时存入本机凭据库，页面只写 secret:<名字>。不会返回值。${secretNotice}`,
+    inputSchema: { name: z.string(), value: z.string().min(1), scope: z.string().trim().min(1).describe('允许使用这条凭据的用途') },
+  }, ({ name, value, scope }) => secretCall(() => secrets.set(name, value, scope, { agent: wiki.config.agent })))
+  server.registerTool('memwiki_secret_delete', {
+    description: '删除本机凭据（不可恢复），仅按用户要求使用，不影响 wiki 引用。',
+    inputSchema: { name: z.string() },
+  }, ({ name }) => secretCall(async () => { await secrets.delete(name, { agent: wiki.config.agent }); return { deleted: true } }))
 
   server.registerTool('memwiki_context', {
     description: '返回共享记忆库的精简目录（每页一行摘要，置顶页、规则、用户偏好和当前项目的页面在前）。任务开始时先调用一次，了解已有哪些知识；会话开始已注入过目录就不用再调。',
@@ -308,8 +338,8 @@ export function createMemwikiServer(wiki: Memwiki): McpServer {
 }
 
 /** Starts the MCP server over stdio. */
-export async function serveMemwiki(wiki: Memwiki): Promise<void> {
-  const server = createMemwikiServer(wiki)
+export async function serveMemwiki(wiki: Memwiki, secrets?: SecretStore): Promise<void> {
+  const server = createMemwikiServer(wiki, secrets)
   const transport = new StdioServerTransport()
   await server.connect(transport)
 }

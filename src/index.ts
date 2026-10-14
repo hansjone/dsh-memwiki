@@ -4,6 +4,8 @@ export { resolveConfig } from './config.ts'
 export type { ResolveConfigOpts } from './config.ts'
 export { initVault, readManifest } from './core/vault.ts'
 export { createMemwikiServer, serveMemwiki } from './mcp/server.ts'
+export { SecretStore } from './secrets/store.ts'
+export type { SecretStoreOptions, SecretMeta, SecretAccess, Protector } from './secrets/store.ts'
 export {
   MemwikiError,
   PAGE_TYPES,
