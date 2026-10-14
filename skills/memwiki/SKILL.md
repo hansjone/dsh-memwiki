@@ -33,6 +33,7 @@ description: 使用共享记忆 wiki（dsh-memwiki）跨会话、跨 AI 记住�
 - 密码、token 不写进页面；低风险的（本地开发、测试账号、内网设备）存凭据库（用户明确要求时用 `memwiki_secret_set`），页面里写 `secret:<名字>`；银行、邮箱、主账号、生产环境的密码不要存。取值必须说明 purpose，仅按 scope 使用，不回显给用户，不写进文件或页面。
 - 不记看代码或 git 记录就能知道的东西，不记只对当前会话有用的临时状态。
 - 不复制已有内容到新页面，用 `[[双链]]` 指过去。
+- **禁止改写 git 历史**：不 amend/rebase 已推送的提交、不 force push、不 squash、不删除或重建 `.git`。
 - 收到 `CONFLICT` 时不要强行覆盖：重新 `memwiki_read`，在最新内容上再改。
 
 ## 维护

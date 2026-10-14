@@ -54,3 +54,5 @@ pinned: true
 优先用 `memwiki_*` 工具，它们会处理版本冲突、链接、目录、日志和 git 提交。
 
 没有工具可用、只能直接改文件时：保持页头格式不变，更新 `updated`、`updated_by`，然后用带写入方前缀的信息提交，比如 `git commit -m "[codex] 更新 topics/xxx：原因"`。
+
+- **禁止改写 git 历史**：不要 amend 或 rebase 已推送的提交，不要 force push，不要压缩（squash）历史，不要删除或重建 `.git`。服务器已禁止强制推送。memwiki 工具用不了时，只能直接改文件后做一次普通提交。
