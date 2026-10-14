@@ -226,7 +226,9 @@ async function installSkill(targets: string[]) {
   }
   for (const [dest, label] of dests) {
     if (existsSync(dest)) {
-      await cp(dest, dest + '.bak', { recursive: true, force: true })
+      // Back up outside the skills root: a sibling `memwiki.bak/SKILL.md` would be loaded as a second skill.
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      await cp(dest, path.join(os.homedir(), '.memwiki', 'skill-backups', `${label}-memwiki-${stamp}`), { recursive: true, force: true })
     }
     await mkdir(path.dirname(dest), { recursive: true })
     await cp(src, dest, { recursive: true, force: true })
