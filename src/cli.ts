@@ -76,6 +76,18 @@ async function backup(file: string): Promise<void> {
   if (existsSync(file)) await copyFile(file, file + '.bak')
 }
 
+/**
+ * Reads a JSON config to merge into. A missing file starts empty; an unreadable or
+ * unparsable one aborts, so `setup --write` never replaces a user's config with `{}`.
+ */
+async function readJsonForMerge(file: string): Promise<Record<string, unknown>> {
+  let raw: string
+  try { raw = await readFile(file, 'utf8') }
+  catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return {}; throw e }
+  try { return JSON.parse(raw) as Record<string, unknown> }
+  catch { throw new Error(`${file} 不是合法的 JSON（可能含注释），为避免覆盖已停止；请手动合并上面打印的片段`) }
+}
+
 async function setupClient(client: string, opts: { write: boolean; dir?: string }) {
   const vault = opts.dir ?? process.env.MEMWIKI_DIR ?? path.join(os.homedir(), 'memwiki')
   const agents = { claude: 'claude', codex: 'codex', cursor: 'cursor', dsh: 'dsh' } as const
@@ -92,7 +104,8 @@ async function setupClient(client: string, opts: { write: boolean; dir?: string 
     const hookSnippet = {
       hooks: {
         SessionStart: [{
-          hooks: [{ type: 'command', command: `${JSON.stringify(process.execPath)} ${JSON.stringify(cliJs)} context --dir ${JSON.stringify(vault)} --agent claude` }],
+          // Shell command line, not JSON: quote paths with plain double quotes (Windows paths keep single backslashes).
+          hooks: [{ type: 'command', command: `"${process.execPath}" "${cliJs}" context --dir "${vault}" --agent claude` }],
         }],
       },
     }
@@ -106,9 +119,11 @@ async function setupClient(client: string, opts: { write: boolean; dir?: string 
       await mkdir(path.dirname(settingsPath), { recursive: true })
       await backup(settingsPath)
       let settings: Record<string, unknown> = {}
-      try { settings = JSON.parse(await readFile(settingsPath, 'utf8')) } catch { /* new */ }
+      settings = await readJsonForMerge(settingsPath)
       const hooks = (settings.hooks ?? {}) as Record<string, unknown>
-      const existing = Array.isArray(hooks.SessionStart) ? hooks.SessionStart as unknown[] : []
+      // Re-running setup replaces our earlier hook instead of stacking duplicates.
+      const ours = (entry: unknown) => JSON.stringify(entry).includes('dsh-memwiki') && JSON.stringify(entry).includes(' context ')
+      const existing = (Array.isArray(hooks.SessionStart) ? hooks.SessionStart as unknown[] : []).filter(e => !ours(e))
       hooks.SessionStart = [...existing, ...(hookSnippet.hooks.SessionStart as unknown[])]
       settings.hooks = hooks
       await writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n')
@@ -116,7 +131,7 @@ async function setupClient(client: string, opts: { write: boolean; dir?: string 
       const claudeJson = path.join(os.homedir(), '.claude.json')
       await backup(claudeJson)
       let root: Record<string, unknown> = {}
-      try { root = JSON.parse(await readFile(claudeJson, 'utf8')) } catch { /* new */ }
+      root = await readJsonForMerge(claudeJson)
       const servers = (root.mcpServers ?? {}) as Record<string, unknown>
       servers.memwiki = mcpSnippet.mcpServers.memwiki
       root.mcpServers = servers
@@ -131,6 +146,9 @@ async function setupClient(client: string, opts: { write: boolean; dir?: string 
       '[mcp_servers.memwiki]',
       `command = ${JSON.stringify(mcp.command)}`,
       `args = [${mcp.args.map(a => JSON.stringify(a)).join(', ')}]`,
+      // Codex asks before every MCP tool call by default, and non-interactive runs
+      // (approval policy "never") then reject the call. memwiki only touches its vault.
+      'default_tools_approval_mode = "approve"',
       '[mcp_servers.memwiki.env]',
       ...Object.entries(mcp.env).map(([k, v]) => `${k} = ${JSON.stringify(v)}`),
       '',
@@ -159,7 +177,7 @@ async function setupClient(client: string, opts: { write: boolean; dir?: string 
       await mkdir(path.dirname(configPath), { recursive: true })
       await backup(configPath)
       let root: Record<string, unknown> = {}
-      try { root = JSON.parse(await readFile(configPath, 'utf8')) } catch { /* new */ }
+      root = await readJsonForMerge(configPath)
       const servers = (root.mcpServers ?? {}) as Record<string, unknown>
       servers.memwiki = snippet.mcpServers.memwiki
       root.mcpServers = servers
