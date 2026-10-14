@@ -3,7 +3,7 @@ import path from 'node:path'
 import { MemwikiError } from '../types.ts'
 import type { MemwikiConfig, Page, PageMeta, WriteOp, WriteContext, WriteResult, MoveResult, DeleteResult } from '../types.ts'
 import { normalizeId, idToRelPath, relPathToId, isSpecialId, safeResolve } from './ids.ts'
-import { applyMetaPatch, computeRev, defaultMeta, parsePage, serializePage } from './page.ts'
+import { applyMetaPatch, computeRev, defaultMeta, localDate, nowIso, parsePage, serializePage } from './page.ts'
 import { codeRanges, createResolver, extractLinks, rewriteLinks } from './links.ts'
 import { scanSecrets } from './secrets.ts'
 import { withLock } from './lock.ts'
@@ -159,7 +159,7 @@ export class Store {
   }
 
   private updated(meta: PageMeta, id: string, ctx: WriteContext): PageMeta {
-    const next = { ...meta, updated: new Date().toISOString(), updated_by: ctx.agent }
+    const next = { ...meta, updated: nowIso(), updated_by: ctx.agent }
     if (ctx.source) {
       if (next.sources !== undefined && (!Array.isArray(next.sources) || !next.sources.every(s => typeof s === 'string'))) throw new MemwikiError('INVALID_META', 'sources 必须是字符串数组')
       next.sources = [...new Set([...(next.sources ?? []), ctx.source])]
@@ -198,7 +198,7 @@ export class Store {
       }
       let meta: PageMeta
       let body: string
-      if (op.kind === 'create') { meta = defaultMeta(id, op.meta); meta.created = new Date().toISOString().slice(0, 10); body = op.body }
+      if (op.kind === 'create') { meta = defaultMeta(id, op.meta); meta.created = localDate(); body = op.body }
       else {
         meta = { ...page!.meta }
         body = page!.body

@@ -18,12 +18,26 @@ const valid: Record<string, (v: unknown) => boolean> = {
 }
 const required = ['title', 'summary', 'type', 'status', 'created', 'updated', 'updated_by']
 
+const pad = (n: number, width = 2) => String(Math.trunc(Math.abs(n))).padStart(width, '0')
+
+/** Local wall-clock ISO datetime with offset, e.g. `2026-10-14T22:05:30+08:00` (§3.2). */
+export function nowIso(at = new Date()): string {
+  const offset = -at.getTimezoneOffset()
+  const sign = offset >= 0 ? '+' : '-'
+  return `${localDate(at)}T${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`
+    + `${sign}${pad(offset / 60)}:${pad(offset % 60)}`
+}
+
+/** Local calendar date `YYYY-MM-DD`; UTC dates are off by one near midnight outside UTC. */
+export function localDate(at = new Date()): string {
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+}
+
 /** Supplies inferred metadata for a new ID, then applies the supplied patch. */
 export function defaultMeta(id: string, patch: MetaPatch = {}): PageMeta {
   const parts = id.split('/')
   const kind: Record<string, PageType> = { user: 'user', rules: 'rule', projects: 'project', topics: 'topic', howto: 'howto', decisions: 'decision', reference: 'reference', inbox: 'inbox' }
-  const now = new Date().toISOString()
-  const meta: PageMeta = { title: parts.at(-1) || 'Untitled', summary: '', type: kind[parts[0]] ?? 'topic', tags: [], aliases: [], status: 'active', created: now.slice(0, 10), updated: now, updated_by: 'external' }
+  const meta: PageMeta = { title: parts.at(-1) || 'Untitled', summary: '', type: kind[parts[0]] ?? 'topic', tags: [], aliases: [], status: 'active', created: localDate(), updated: nowIso(), updated_by: 'external' }
   if (parts[0] === 'projects' && parts.length > 2) meta.project = parts[1]
   return applyMetaPatch(meta, patch)
 }

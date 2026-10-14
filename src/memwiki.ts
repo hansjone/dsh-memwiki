@@ -12,6 +12,7 @@ import { commit, hasRemote, listUncommitted, pullRebase, push } from './core/git
 import { scanSecrets } from './core/secrets.ts'
 import { idToRelPath, safeResolve } from './core/ids.ts'
 import { atomicWrite } from './core/fs.ts'
+import { nowIso } from './core/page.ts'
 import { createSearchEngine } from './search/engine.ts'
 import { buildContext, buildIndexMd } from './search/catalog.ts'
 import { fixFor, lintRecords } from './search/lint.ts'
@@ -123,15 +124,32 @@ export class Memwiki {
     return [...this.records.values()]
   }
 
+  private resolverFromRecords(): ReturnType<typeof createResolver> {
+    return createResolver(this.recordList().map(r => ({ id: r.id, title: r.meta.title, aliases: r.meta.aliases })))
+  }
+
+  /**
+   * Re-resolves every record's links. Needed whenever the set of link targets changes
+   * (page created, deleted, or retitled): links written before their target existed must
+   * stop counting as broken, and links to a deleted page must start counting.
+   */
+  private relinkAll(): void {
+    const resolver = this.resolverFromRecords()
+    for (const record of this.records.values()) {
+      const { links, brokenLinks } = this.toRecord({ ...record, path: '', rev: '' } as Page, resolver)
+      record.links = links
+      record.brokenLinks = brokenLinks
+    }
+  }
+
   private upsertRecord(page: Page): void {
-    const pages = this.recordList().map(r => ({ id: r.id, title: r.meta.title, aliases: r.meta.aliases }))
-    // Include the updated page itself for accurate link resolution.
-    const idx = pages.findIndex(p => p.id.toLowerCase() === page.id.toLowerCase())
-    const entry = { id: page.id, title: page.meta.title, aliases: page.meta.aliases }
-    if (idx >= 0) pages[idx] = entry
-    else pages.push(entry)
-    const resolver = createResolver(pages)
-    const record = this.toRecord(page, resolver)
+    const previous = this.records.get(this.key(page.id))
+    const sameTargets = previous !== undefined && previous.meta.title === page.meta.title
+      && JSON.stringify(previous.meta.aliases) === JSON.stringify(page.meta.aliases)
+    // Store a placeholder first so the page can resolve links to itself.
+    this.records.set(this.key(page.id), this.toRecord(page, createResolver([])))
+    if (!sameTargets) this.relinkAll()
+    const record = this.toRecord(page, this.resolverFromRecords())
     this.records.set(this.key(page.id), record)
     this.engine.upsert(record)
   }
@@ -139,6 +157,7 @@ export class Memwiki {
   private removeRecord(id: string): void {
     this.records.delete(this.key(id))
     this.engine.remove(id)
+    this.relinkAll()
   }
 
   private noteOwnWrite(paths: string[], pages: Page[] = []): void {
@@ -184,7 +203,7 @@ export class Memwiki {
     }
     const indexChanged = await this.rewriteIndexMd()
     const entry: LogEntry = {
-      at: new Date().toISOString(),
+      at: nowIso(),
       agent: opts.agent,
       action: opts.action,
       page: opts.page,
@@ -421,7 +440,7 @@ export class Memwiki {
       const indexChanged = await this.rewriteIndexMd()
       this.watcher?.noteWrite('log.md')
       await appendLog(this.config.dir, {
-        at: new Date().toISOString(),
+        at: nowIso(),
         agent,
         action: 'lint',
         reason: opts.fix ? `自动修复 ${fixed} 项` : '体检',

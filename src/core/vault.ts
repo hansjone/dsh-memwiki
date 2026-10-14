@@ -4,6 +4,7 @@ import path from 'node:path'
 import { MemwikiError } from '../types.ts'
 import type { VaultManifest } from '../types.ts'
 import { safeResolve } from './ids.ts'
+import { localDate } from './page.ts'
 import { commit, gitInit } from './git.ts'
 
 /** Reads the v1 manifest; throws NOT_A_VAULT for missing/invalid markers and UNSUPPORTED_SCHEMA for newer versions. */
@@ -30,7 +31,7 @@ export async function readManifest(dir: string): Promise<VaultManifest> {
 export async function initVault(dir: string, opts: { name?: string; git: boolean }): Promise<void> {
   const root = path.resolve(dir)
   await mkdir(root, { recursive: true })
-  const manifest: VaultManifest = { schemaVersion: 1, name: opts.name ?? path.basename(root), created: new Date().toISOString().slice(0, 10) }
+  const manifest: VaultManifest = { schemaVersion: 1, name: opts.name ?? path.basename(root), created: localDate() }
   try { await writeFile(safeResolve(root, 'memwiki.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' }) }
   catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'EEXIST') throw new MemwikiError('EXISTS', '记忆库已经存在')

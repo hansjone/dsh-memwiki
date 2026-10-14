@@ -1,4 +1,5 @@
 import type { ContextOptions, PageRecord } from '../types.ts'
+import { nowIso } from '../core/page.ts'
 
 const ORDER = ['user', 'rules', 'projects', 'topics', 'howto', 'decisions', 'reference']
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0
@@ -17,7 +18,7 @@ export function buildIndexMd(records: PageRecord[], opts: { generatedAt: Date })
     groups.get(group)!.push(r)
   }
   const extras = [...groups.keys()].filter(group => !ORDER.includes(group) && group !== 'inbox').sort(compare)
-  const lines = ['# 记忆目录', '', `共 ${pages.length} 页`, `生成时间：${opts.generatedAt.toISOString()}`]
+  const lines = ['# 记忆目录', '', `共 ${pages.length} 页`, `生成时间：${nowIso(opts.generatedAt)}`]
   const append = (r: PageRecord) => lines.push(`- [[${r.id}|${oneLine(r.meta.title)}]] — ${oneLine(r.meta.summary)}${r.meta.status === 'active' ? '' : ` （${r.meta.status}）`}`)
   for (const group of [...ORDER, ...extras, 'inbox']) {
     const rows = groups.get(group)
