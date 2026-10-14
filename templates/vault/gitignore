@@ -1,0 +1,5 @@
+# dsh-memwiki local cache and locks
+.memwiki/
+# Obsidian per-device workspace state
+.obsidian/workspace*.json
+.obsidian/cache
