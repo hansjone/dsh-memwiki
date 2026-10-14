@@ -152,7 +152,7 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 - 查询原文（去空格后）整体出现在标题/别名里：×2；出现在正文里：×1.3。
 - 页面属于当前项目（`project` 等于调用方给的项目名）：×1.3。
 - `status` 为 `stale` / `superseded`：×0.4；`draft`：×0.8。默认结果里不包含 `superseded`，除非 `includeSuperseded`。
-- 过滤条件：`type`、`tags`（全部包含）、`project`、`dir`（ID 前缀）。
+- 过滤条件：`type`、`tags`（全部包含）、`dir`（ID 前缀）。`project` 只加权不过滤；要只看某个项目用 `dir: 'projects/<name>/'`。
 
 ### 5.3 结果
 
@@ -174,7 +174,7 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 2. `pinned` 页面。
 3. `type: rule` 和 `type: user` 的页面。
 4. 当前项目的页面（按 `updated` 新到旧）。
-5. 其他页面按 `updated` 新到旧。
+5. 其他页面按 `updated` 新到旧（inbox 页面不逐条列出）。
 6. inbox 未整理条目数（>0 时提示需要整理）。
 
 每行格式：`- [[id]] — summary`（`stale` 加"（可能过时）"）。
