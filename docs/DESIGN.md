@@ -129,6 +129,7 @@ project: netx
 - 库是 git 仓库且 `git.autoCommit` 为真时，每次写入提交一次：只 `add` 本次涉及的文件（页面、`index.md`、`log.md`、移动/删除的源路径），提交信息 `[<agent>] <动作> <页面ID>：<reason>`，作者名 `<agent> (memwiki)`，邮箱 `<agent>@memwiki.local`。
 - 多个进程并发时 git 的 `index.lock` 冲突要退避重试（最多 5 次）。
 - 库外部的改动（人在 Obsidian 里编辑、AI 直接改文件）：文件监视发现后防抖 60 秒，统一提交 `[external] 外部编辑 N 个页面`。
+- **多机同步**：`git.autoPush` 开启且库配置了远程时，提交后防抖 30 秒执行一次 `git push`；推送失败（离线、被拒）只记录警告，不影响写入，下次再推。`dsh-memwiki sync` 手动同步：`git pull --rebase --autostash` 后 `push`；变基冲突时中止变基、保持本地不变，并列出冲突文件让用户或 AI 处理。凭据走 git 自己的凭据机制（凭据管理器、SSH key），本工具不保存任何凭据。
 - `log.md` 每次写入追加一行：`- 2026-10-14 20:31 [claude] 更新 [[projects/netx/发布流程]]：补充 Ollama PATH 坑`。按月分节（`## 2026-10`），新的在最上面。
 
 ### 4.5 删除与回收站
@@ -205,6 +206,7 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 | 库目录 | `--dir` | `MEMWIKI_DIR` | `~/memwiki` |
 | 写入方 ID | `--agent` | `MEMWIKI_AGENT` | `agent` |
 | 自动提交 | `--no-git` | `MEMWIKI_GIT=0` | 库是 git 仓库时开启 |
+| 自动推送 | `--push` / `--no-push` | `MEMWIKI_GIT_PUSH=1` | 关闭；库里 `settings.autoPush` 可开 |
 | 精简上下文预算（字节） | `--budget` | `MEMWIKI_CONTEXT_BUDGET` | 4096 |
 | 过期天数 | — | — | 90 |
 | 敏感信息扫描 | — | — | 开启 |
@@ -212,7 +214,7 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 `memwiki.json`：
 
 ```json
-{ "schemaVersion": 1, "name": "我的记忆库", "created": "2026-10-14", "settings": { "staleDays": 90, "contextBudget": 4096 } }
+{ "schemaVersion": 1, "name": "我的记忆库", "created": "2026-10-14", "settings": { "staleDays": 90, "contextBudget": 4096, "autoPush": false } }
 ```
 
 没有 `memwiki.json` 的目录不是库：除 `init` 外的命令都报错并提示先运行 `dsh-memwiki init`。`schemaVersion` 高于程序支持的版本时只读打开并警告。
@@ -250,6 +252,7 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 | `search <query>` / `read <page>` | 调试用 |
 | `lint [--fix]` | 体检 |
 | `reindex` | 重建检索缓存 |
+| `sync` | 与远程仓库同步（§4.4 多机同步） |
 | `setup <client>` | 打印（`--write` 时写入）对应客户端的 MCP + hook 配置：`claude` `codex` `cursor` `dsh` |
 | `install-skill [--target ...]` | 把 `skills/memwiki` 复制到 `~/.claude/skills`、`~/.agents/skills`（Codex/DSH）、`~/.cursor/skills` |
 

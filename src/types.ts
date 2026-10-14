@@ -165,7 +165,8 @@ export interface MemwikiConfig {
   /** Absolute vault root. */
   dir: string
   agent: string
-  git: { autoCommit: boolean }
+  /** `autoPush` is optional for backward compatibility; absent means off (§4.4). */
+  git: { autoCommit: boolean; autoPush?: boolean }
   contextBudget: number
   staleDays: number
   secretScan: boolean
@@ -176,7 +177,7 @@ export interface VaultManifest {
   schemaVersion: number
   name: string
   created: string
-  settings?: { staleDays?: number; contextBudget?: number; secretScan?: boolean }
+  settings?: { staleDays?: number; contextBudget?: number; secretScan?: boolean; autoPush?: boolean }
 }
 
 /** Search query (§5). */
