@@ -4,17 +4,10 @@
 # command 用 node 绝对路径；args 通过 createRequire 解析本包 lib/cli.js。
 # 若运行时 resolve 失败，请用 `dsh-memwiki setup dsh --write` 把绝对路径写入 $DSH_HOME/cordis.patch.yml。
 - insert:
-    # 文件路径入口使 client-modules 按最近 package.json 发现本包 dsh.client；
-    # 普通 dsh-memwiki/dsh-host 子路径不会被 client-modules 扫描。
+    # Host plugin (settings routes) by package name, like dsh-trilium. An absolute
+    # file path here broke DSH's plugin inventory ("无法读取全部插件").
     - id: memwiki-host
-      name: !!js >-
-        (() => {
-          const path = process.getBuiltinModule('node:path')
-          const { createRequire } = process.getBuiltinModule('node:module')
-          const { pathToFileURL } = process.getBuiltinModule('node:url')
-          const req = createRequire(pathToFileURL(path.join(process.cwd(), 'package.json')).href)
-          return path.join(path.dirname(req.resolve('dsh-memwiki/package.json')), 'lib', 'dsh-host.js')
-        })()
+      name: 'dsh-memwiki'
     - id: memwiki
       name: '@deepseek-ai/dsh-mcp-client'
       config:

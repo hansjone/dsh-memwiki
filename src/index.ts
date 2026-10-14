@@ -1,3 +1,6 @@
+// DSH loads the package by name (cordis.patch.yml `name: dsh-memwiki`), like dsh-trilium:
+// the main entry doubles as the host plugin. host.ts has only type imports from DSH.
+export { apply, inject, name } from './dsh/host.ts'
 export { Memwiki } from './memwiki.ts'
 export type { MutationResult, RememberResult, LintResult, SyncResult } from './memwiki.ts'
 export { resolveConfig } from './config.ts'

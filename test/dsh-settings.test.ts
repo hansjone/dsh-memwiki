@@ -103,7 +103,7 @@ test('settings request guard rejects cross-origin and non-loopback requests', ()
   assert.equal(allowedRequest('127.0.0.1', { origin: 'http://localhost' }), false)
 })
 
-test('DSH patch uses a file host entry and shares directory precedence with resolveConfig', async t => {
+test('DSH patch loads the host plugin by package name and shares directory precedence with resolveConfig', async t => {
   const home = await temporary(t)
   const patch = parse(await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8'), { customTags: [{ tag: 'tag:yaml.org,2002:js', resolve: (value: string) => value }] }) as Array<{ insert: Array<{ id: string; name: string; config?: { env: { MEMWIKI_DIR: string } } }> }>
   const host = patch[0].insert.find(row => row.id === 'memwiki-host')!
@@ -113,7 +113,8 @@ test('DSH patch uses a file host entry and shares directory precedence with reso
     cwd: () => path.resolve('.'), env,
     getBuiltinModule: (id: string) => id === 'node:os' ? { homedir: () => home } : process.getBuiltinModule(id),
   }
-  assert.equal(path.isAbsolute(runInNewContext(host.name, { process: fakeProcess })), true)
+  // A computed file path as the row name broke DSH's plugin inventory; keep the package name.
+  assert.equal(host.name, 'dsh-memwiki')
   const expression = mcp.config!.env.MEMWIKI_DIR
   assert.equal(runInNewContext(expression, { process: fakeProcess }), path.join(home, 'memwiki'))
   await writeDshConfig({ dir: '~/saved', autoPush: true }, dshConfigFile(home))
