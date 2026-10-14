@@ -70,3 +70,45 @@ export async function commit(dir: string, paths: string[], opts: { agent: string
     }
   })
 }
+
+/** True when the vault has at least one configured remote. */
+export async function hasRemote(dir: string): Promise<boolean> {
+  try { return (await git(dir, ['remote'])).trim().length > 0 }
+  catch { return false }
+}
+
+/** Pushes the current branch to its upstream (or `origin` HEAD). */
+export async function push(dir: string): Promise<void> {
+  await git(dir, ['push'])
+}
+
+export interface PullRebaseResult {
+  ok: boolean
+  /** Set when rebase aborted due to conflicts. */
+  conflicts?: string[]
+}
+
+/** Pulls with rebase + autostash; on conflict aborts rebase and returns conflict paths. */
+export async function pullRebase(dir: string): Promise<PullRebaseResult> {
+  try {
+    await git(dir, ['pull', '--rebase', '--autostash'])
+    return { ok: true }
+  } catch (e) {
+    const err = e as Error & { stderr?: string; stdout?: string }
+    const text = `${err.stderr ?? ''}\n${err.stdout ?? ''}\n${err.message}`
+    if (/conflict|CONFLICT|could not apply|needs merge/i.test(text)) {
+      try { await git(dir, ['rebase', '--abort']) } catch { /* already clean or not rebasing */ }
+      let conflicts: string[] = []
+      try {
+        const names = (await git(dir, ['diff', '--name-only', '--diff-filter=U'])).trim()
+        if (names) conflicts = names.split(/\r?\n/).map(s => s.replaceAll('\\', '/'))
+      } catch { /* ignore */ }
+      if (!conflicts.length) {
+        const match = text.match(/(?:CONFLICT(?:\s+\([^)]+\))?\s*:?\s*(?:Merge conflict in|content conflict in)\s+)(.+)/gi)
+        if (match) conflicts = [...new Set(match.map(line => line.replace(/^.*?in\s+/i, '').trim().replaceAll('\\', '/')))]
+      }
+      return { ok: false, conflicts }
+    }
+    throw e
+  }
+}

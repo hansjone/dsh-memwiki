@@ -1,0 +1,29 @@
+# dsh-memwiki bundle patch：插入 MCP 客户端条目。
+# 安装：dsh plugin add dsh-memwiki（或本地路径）。
+# 库目录：优先环境变量 MEMWIKI_DIR；未设置时默认 ~/memwiki。
+# command 用 node 绝对路径；args 通过 createRequire 解析本包 lib/cli.js。
+# 若运行时 resolve 失败，请用 `dsh-memwiki setup dsh --write` 把绝对路径写入 $DSH_HOME/cordis.patch.yml。
+- insert:
+    - id: memwiki
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: memwiki
+        transport: stdio
+        command: !!js process.execPath
+        args: !!js >-
+          (() => {
+            const path = process.getBuiltinModule('node:path')
+            const { createRequire } = process.getBuiltinModule('node:module')
+            const { pathToFileURL } = process.getBuiltinModule('node:url')
+            const req = createRequire(pathToFileURL(path.join(process.cwd(), 'package.json')).href)
+            const root = path.dirname(req.resolve('dsh-memwiki/package.json'))
+            return [path.join(root, 'lib', 'cli.js'), 'serve']
+          })()
+        env:
+          MEMWIKI_AGENT: dsh
+          MEMWIKI_DIR: !!js >-
+            process.env.MEMWIKI_DIR?.trim()
+            || process.getBuiltinModule('node:path').join(
+              process.getBuiltinModule('node:os').homedir(),
+              'memwiki'
+            )
