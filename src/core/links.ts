@@ -71,3 +71,49 @@ export function extractLinks(body: string): WikiLink[] {
 export function formatLink(target: string, heading?: string, label?: string): string {
   return '[[' + target + (heading ? '#' + heading : '') + (label ? '|' + label : '') + ']]'
 }
+
+/** Resolves ID, title, alias, then basename, case-insensitively; reports candidates at the first matching tier. */
+export function createResolver(pages: Array<{ id: string; title: string; aliases: string[] }>):
+  (target: string) => { id: string } | { ambiguous: string[] } | undefined {
+  const tiers = [
+    (p: typeof pages[number]) => [p.id],
+    (p: typeof pages[number]) => [p.title],
+    (p: typeof pages[number]) => p.aliases,
+    (p: typeof pages[number]) => [p.id.split('/').at(-1)!],
+  ].map(keys => {
+    const index = new Map<string, Set<string>>()
+    for (const page of pages) for (const value of keys(page)) {
+      const key = value.toLowerCase()
+      if (!index.has(key)) index.set(key, new Set())
+      index.get(key)!.add(page.id)
+    }
+    return index
+  })
+  return target => {
+    const key = target.trim().toLowerCase()
+    for (const tier of tiers) {
+      const matches = tier.get(key)
+      if (matches?.size) {
+        const ids = [...matches].sort()
+        return ids.length === 1 ? { id: ids[0] } : { ambiguous: ids }
+      }
+    }
+    return undefined
+  }
+}
+
+/** Replaces only non-code link targets, preserving heading, label and whitespace verbatim. */
+export function rewriteLinks(body: string, map: (target: string) => string | undefined): string {
+  let result = body
+  for (const link of extractLinks(body).reverse()) {
+    const replacement = map(link.target)
+    if (replacement === undefined) continue
+    const raw = body.slice(link.start + 2, link.end - 2)
+    const boundary = raw.search(/[#|]/)
+    const target = boundary < 0 ? raw : raw.slice(0, boundary)
+    const left = target.length - target.trimStart().length
+    const right = target.trimEnd().length
+    result = result.slice(0, link.start + 2 + left) + replacement + result.slice(link.start + 2 + right)
+  }
+  return result
+}

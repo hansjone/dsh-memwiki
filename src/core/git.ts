@@ -1,0 +1,72 @@
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { setTimeout as delay } from 'node:timers/promises'
+import { lstat } from 'node:fs/promises'
+import path from 'node:path'
+import { safeResolve } from './ids.ts'
+import { withLock } from './lock.ts'
+
+const exec = promisify(execFile)
+async function git(dir: string, args: string[]): Promise<string> {
+  const { stdout } = await exec('git', args, { cwd: path.resolve(dir), encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
+  return stdout
+}
+
+/** True only for a git working-tree root (not a vault merely inside another repo). */
+export async function isGitRepo(dir: string): Promise<boolean> {
+  try { return path.resolve((await git(dir, ['rev-parse', '--show-toplevel'])).trim()).toLowerCase() === path.resolve(dir).toLowerCase() }
+  catch { return false }
+}
+
+/** Initializes a repository at dir without changing global git configuration. */
+export async function gitInit(dir: string): Promise<void> { await git(dir, ['init']) }
+
+/** Lists staged, unstaged and untracked vault-relative paths, including both sides of renames. */
+export async function listUncommitted(dir: string): Promise<string[]> {
+  const records = (await git(dir, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])).split('\0')
+  const paths: string[] = []
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i]
+    if (!record) continue
+    paths.push(record.slice(3).replaceAll('\\', '/'))
+    if (/[RC]/.test(record.slice(0, 2)) && records[i + 1]) paths.push(records[++i].replaceAll('\\', '/'))
+  }
+  return [...new Set(paths)].sort()
+}
+
+/** Commits only requested paths with memwiki identity; retries index.lock failures five times, returns undefined for no changes. */
+export async function commit(dir: string, paths: string[], opts: { agent: string; message: string }): Promise<string | undefined> {
+  const selected = [...new Set(paths.map(rel => {
+    safeResolve(dir, rel)
+    return path.relative(path.resolve(dir), safeResolve(dir, rel)).replaceAll('\\', '/')
+  }))]
+  if (!selected.length) return undefined
+  return withLock(dir, ':git-commit', async () => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const dirty = new Set(await listUncommitted(dir))
+        const touched = selected.filter(p => dirty.has(p))
+        if (!touched.length) return undefined
+        const literal = touched.map(p => ':(literal)' + p)
+        // Already-staged deletions are absent from the index and cannot be passed to git add.
+        const indexed = new Set((await git(dir, ['ls-files', '-z', '--', ...literal])).split('\0'))
+        const stage: string[] = []
+        for (const rel of touched) {
+          let exists = false
+          try { await lstat(safeResolve(dir, rel)); exists = true }
+          catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+          if (exists || indexed.has(rel)) stage.push(':(literal)' + rel)
+        }
+        if (stage.length) await git(dir, ['add', '-A', '--', ...stage])
+        if (!(await git(dir, ['diff', '--cached', '--name-only', '-z', '--', ...literal]))) return undefined
+        const identity = ['-c', `user.name=${opts.agent} (memwiki)`, '-c', `user.email=${opts.agent}@memwiki.local`]
+        await git(dir, [...identity, 'commit', '--only', '-m', opts.message, '--', ...literal])
+        return (await git(dir, ['rev-parse', 'HEAD'])).trim()
+      } catch (e) {
+        const err = e as Error & { stderr?: string }
+        if (!/index\.lock/.test(err.stderr ?? err.message) || attempt >= 5) throw e
+        await delay(50 * 2 ** attempt)
+      }
+    }
+  })
+}
