@@ -30,6 +30,7 @@ test('pointers to secrets are not secrets', () => {
     'token: NETX_FORGEJO_TOKEN', 'token：在用户环境变量 NETX_FORGEJO_TOKEN 里', 'token：在环境变量里，不要写进配置',
     'password=$DB_PASSWORD', 'password=${DB_PASSWORD}', 'password=%DB_PASSWORD%', 'secret=<your-secret-here>',
     'token: ********', 'api_key=xxxxxxxxxxxx', 'secret: 存在 1Password 的「NAS」条目里', 'token=placeholder',
+    '密码在凭据库：`secret:netx-local-admin`', 'secret: nas.admin.web', 'token=forgejo-api-token',
   ]
   for (const text of pointers) assert.deepEqual(scanSecrets(text), [], text)
 })

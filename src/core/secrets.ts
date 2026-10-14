@@ -25,6 +25,8 @@ export function looksLikeSecret(key: string, value: string): boolean {
   if (/^(?:\$\{?|%|<|\{\{|\*{3,}|x{4,}|\.{3})/iu.test(value)) return false
   if (/^[A-Z][A-Z0-9_]*$/u.test(value)) return false
   if (/^(?:password|passwd|pwd)$/iu.test(key)) return value.length >= 8
+  // Lowercase word-separated names are references into the secrets store (`secret:netx-local-admin`).
+  if (/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$/u.test(value)) return false
   const classes = [/[a-z]/u, /[A-Z]/u, /\d/u, /[^A-Za-z0-9]/u].filter(re => re.test(value)).length
   return classes >= 3 || (classes >= 2 && value.length >= 16) || value.length >= 32
 }
