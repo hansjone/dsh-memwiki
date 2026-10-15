@@ -11,5 +11,5 @@ export async function temporary(t: TestContext): Promise<string> {
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }))
   return dir
 }
-export const config = (dir: string): MemwikiConfig => ({ dir, agent: 'test', git: { autoCommit: false }, contextBudget: 4096, staleDays: 90, secretScan: true })
+export const config = (dir: string): MemwikiConfig => ({ dir, agent: 'test', git: { autoCommit: false, autoPush: false }, contextBudget: 4096, staleDays: 90, secretScan: true })
 export const code = (expected: ErrorCode) => (err: unknown): boolean => err instanceof MemwikiError && err.code === expected

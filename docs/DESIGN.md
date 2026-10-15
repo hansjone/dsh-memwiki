@@ -74,18 +74,17 @@ project: myapp
 | `type` | 是 | `user` `rule` `project` `topic` `howto` `decision` `reference` `inbox` `meta` |
 | `tags` | 否 | 标签数组 |
 | `aliases` | 否 | 别名数组（也用于 `[[别名]]` 解析） |
-| `status` | 是 | `active`（默认）`draft` `stale` `superseded` |
+| `status` | 是 | `active`（默认）`stale` |
 | `created` / `updated` | 是 | 写入方自动维护；`updated` 带时区的 ISO 时间 |
 | `updated_by` | 是 | 最后写入的 agent ID（`dsh` `claude` `codex` `cursor` `human` `external`…） |
 | `verified` | 否 | 最后一次确认内容仍然正确的日期 |
 | `sources` | 否 | 依据：`session:<agent>/<id>`、`file:<路径>`、`url:<地址>`、`commit:<仓库>@<sha>` |
-| `superseded_by` | 条件 | `status: superseded` 时必填，指向替代页面 ID |
 | `project` | 否 | 归属项目名；`projects/<name>/` 下的页面缺省即为 `<name>` |
 | `pinned` | 否 | `true` 时总是进精简目录 |
 
 未知字段原样保留（用户/Obsidian 插件可能加自己的字段）。解析失败的页头不报错崩溃：页面仍可读，`lint` 报 `invalid_meta`。
 
-页头校验失败时，`metaError` 包含字段名和原因，`metaIssues` 提供 `{ field, reason }` 数组；写入拒绝时以 `INVALID_META` 返回相同消息和 `details.errors`。summary 按 Unicode 字符计数，超过 120 字直接拒绝并报告当前长度，不截断。
+页头校验失败时，`metaIssues` 提供字段名和原因，格式为 `{ field, reason }` 数组；写入拒绝时以 `INVALID_META` 返回字段说明和 `details.errors`。summary 按 Unicode 字符计数，超过 120 字直接拒绝并报告当前长度，不截断。
 
 ### 3.3 版本号（rev）
 
@@ -95,6 +94,7 @@ project: myapp
 
 - 语法：`[[目标]]`、`[[目标|显示文字]]`、`[[目标#标题]]`。代码块和行内代码里的不算。
 - 目标按 §3.1 的页面引用规则解析；解析不到算断链（`lint` 报告，读页面时也提示）。
+- 相对 Markdown 页面链接如 `[显示](../topics/页面.md#章节)` 不参与链接解析；lint 报 `markdown_link`，`fix: true` 将其改为库根相对 ID 的双链。路径按当前页目录计算，保留显示文字与章节，解码 URL 转义；代码、图片和外部 URL 不转换。越界路径、非法编码或双链无法表示的文字需手动修正。转换后参与反链、断链和 move/merge 改写；应先 lint 修复，再移动或合并。
 - 反向链接：任何页面都能查到"哪些页面链接到它"。
 - **改名**（`move`）时，所有指向旧 ID / 旧标题的链接都改写为新 ID（保留 `|显示文字` 和 `#标题` 部分）。
 
@@ -117,7 +117,7 @@ project: myapp
 
 #### 新建相似页拦截（0.2.0）
 
-create 在结构锁和页面锁内读取最新页面集合，准备并校验新内容后、落盘前检查相似页。inbox、meta、特殊页和 superseded 不参与；remember 保持直接写 inbox，不拦截。force 仍执行 ID/元数据/敏感扫描等全部校验。
+create 在结构锁和页面锁内读取最新页面集合，准备并校验新内容后、落盘前检查相似页。inbox、meta 和特殊页不参与；remember 保持直接写 inbox，不拦截。force 仍执行 ID/元数据/敏感扫描等全部校验。
 
 比较使用标题、摘要和正文前 2000 个字符，不依赖模型或词库。NFKC、转小写、只保留字母数字后：标题二元组 Jaccard 为 T，摘要二元组 Jaccard 为 S；正文去双链、Markdown 链接及标题行后，双方各至少 40 字，按五字符 shingle Jaccard 得 B，否则 B=0。相似度是 `max(0.8T+0.2S, 0.9B, 0.45(0.8T+0.2S)+0.55B)`，范围 [0,1]。这是可解释的字符重叠机制，并不判断语义真伪。
 
@@ -143,17 +143,17 @@ create 在结构锁和页面锁内读取最新页面集合，准备并校验新�
 - 多个进程并发时 git 的 `index.lock` 冲突要退避重试（最多 5 次）。
 - 库外部的改动（人在 Obsidian 里编辑、AI 直接改文件）：文件监视发现后防抖 60 秒，统一提交 `[external] 外部编辑 N 个页面`。
 - **多机同步**：`git.autoPush` 开启且库配置了远程时，提交后防抖 30 秒执行一次 `git push`；推送失败（离线、被拒）只记录警告，不影响写入，下次再推。`dsh-memwiki sync` 手动同步：`git pull --rebase --autostash` 后 `push`；变基冲突时中止变基、保持本地不变，并列出冲突文件让用户或 AI 处理。git 同步凭据走 git 自己的凭据机制（凭据管理器、SSH key），本工具不托管这类凭据；低风险开发/测试凭据另见 §11。
-- `log.md` 每次写入追加一行：`- 2026-10-14 20:31 [claude] 更新 [[projects/myapp/发布流程]]：补充打包时的 PATH 坑`。按月分节（`## 2026-10`），新的在最上面。
+- `log.md` 每条包含完整 LogEntry 的 base64 注释供程序读取；仅含可见文字或损坏注释的行不作为日志条目。每次写入追加一行：`- 2026-10-14 20:31 [claude] 更新 [[projects/myapp/发布流程]]：补充打包时的 PATH 坑`。按月分节（`## 2026-10`），新的在最上面。
 
 ### 4.5 删除与回收站
 
-`delete` 把文件移到 `.trash/<原路径>.<时间戳>.md`，同时扫描反向链接，在结果里返回"这些页面还链接着它"。`restore` 从回收站恢复（原 ID 被占用时报 `EXISTS`）。没有永久删除接口。
+`delete` 把文件移到 `.trash/<原路径>.<时间戳>.md`，同时扫描反向链接，在结果里返回"这些页面还链接着它"。`restore` 从回收站恢复（原 ID 被占用时报 `EXISTS`）。独立删除操作可恢复；merge 直接删除源文件（§4.6）。
 
 ### 4.6 合并与核实
 
 - `merge({ from: string[], into, body?, meta?, rev, ctx })`：调用方先核对归属，把整合后的正文放 body；省略则保留目标正文。必须先确认被删除的独有信息已在归属页存在。
-- 合并持有结构锁和按 ID 排序的页面锁，先解析所有引用、校验非空/不重复的 from、不包含 into、页面存在、目标 rev 一致且目标不为 superseded；准备所有输出并完成元数据/敏感扫描后才开始写。校验失败时页面、目录、日志和 git 均不变。与已有 move 相同，跨文件 I/O 故障不是文件系统事务，不承诺断电回滚。
-- 源文件保留，不进回收站：status=superseded、superseded_by=目标 ID，正文仅“已合并到 [[目标ID]]”。为让旧标题/别名可唯一定位归属页，源页标题变为“已合并：源ID”、摘要改为跳转说明、aliases 清空；源页旧标题及别名并入目标 aliases（大小写不敏感去重）。旧 ID 仍可直接读跳转页，原内容由 git 历史保留。
+- 合并持有结构锁和按 ID 排序的页面锁，先解析所有引用、校验非空/不重复的 from、不包含 into、页面存在、目标 rev 一致；准备所有输出并完成元数据/敏感扫描后才开始写。校验失败时页面、目录、日志和 git 均不变。与已有 move 相同，跨文件 I/O 故障不是文件系统事务，不承诺断电回滚。
+- 源文件直接删除，不进回收站；源页标题和别名并入目标 aliases（大小写不敏感去重），源内容可从 git 历史查阅。磁盘、内存检索索引和目录均移除源 ID。
 - 全库正文中指向源 ID、标题、别名的双链复用 move 的 rewriteLinks 改写为目标 ID，保留显示文字、标题和空白，不碰代码内示例。目标的新正文也改写。一次 afterMutation 生成目录、一条日志、一次 git 提交：`[<agent>] merge A, B -> C：<reason>`。
 - `verify(ref, { note?, ctx })`：解析页面后取页面锁并重新读取，仅把 verified 设为本地今天，status=stale 时恢复 active；不改正文、updated、updated_by、sources 等字段，无需 rev。独立日志/提交的 reason 用 note（没有则 ctx.reason）。**AI 读到并核实过就调用 verify**；不能核实则保持 stale 并标待核实。过时判断继续使用 verified ?? updated。
 
@@ -172,7 +172,7 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 
 - 查询原文（去空格后）整体出现在标题/别名里：×2；出现在正文里：×1.3。
 - 页面属于当前项目（`project` 等于调用方给的项目名）：×1.3。
-- `status` 为 `stale` / `superseded`：×0.4；`draft`：×0.8。默认结果里不包含 `superseded`，除非 `includeSuperseded`。
+- `status` 为 `stale`：×0.4。
 - 过滤条件：`type`、`tags`（全部包含）、`dir`（ID 前缀）。`project` 只加权不过滤；要只看某个项目用 `dir: 'projects/<name>/'`。
 
 ### 5.3 结果
@@ -195,7 +195,7 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 2. `pinned` 页面。
 3. `type: rule` 和 `type: user` 的页面。
 4. 当前项目的页面（按 `updated` 新到旧）。
-5. 其他页面按 `updated` 新到旧（inbox 和 meta/feedback 页面不逐条列出；superseded 不进精简上下文）。
+5. 其他页面按 `updated` 新到旧（inbox 和 meta/feedback 页面不逐条列出）。
 6. inbox 未整理条目数（>0 时提示需要整理）。
 
 每行格式：`- [[id]] — summary`（`stale` 加"（可能过时）"）。
@@ -205,12 +205,12 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 | 问题 | 说明 | 可自动修 |
 |---|---|---|
 | `broken_link` | `[[目标]]` 解析不到 | 否 |
-| `orphan` | 没有任何页面链接到它（`user/` `rules/` `inbox/` 除外） | 否 |
+| `orphan` | 没有任何页面链接到它（`user/` `rules/` `inbox/` `meta/` 除外） | 否 |
 | `duplicate_title` | 多个页面标题或别名相同 | 否 |
 | `missing_summary` | 缺少或空 summary | 否 |
 | `invalid_meta` | 页头无法解析或必填字段缺失/取值非法 | 补齐可推断的默认值 |
 | `stale_candidate` | `verified`（没有则 `updated`）早于 `staleDays` 天 | 标记 `status: stale` |
-| `superseded_target_missing` | `superseded_by` 指向不存在的页面 | 否 |
+| `markdown_link` | 相对 Markdown 页面链接应改成双链；代码、图片和外部 URL 不检查 | 转换可表示的链接；越界路径等需手改 |
 | `oversized` | 正文超过 20 KB，建议拆分 | 否 |
 | `inbox_backlog` | inbox 条目超过 20 条或最早一条超过 14 天 | 否 |
 | `secret_suspect` | 已有内容命中敏感信息规则（外部编辑带进来的） | 否 |
@@ -221,7 +221,7 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 
 输出结构化问题列表（页面、问题、说明、是否可修），`fix: true` 时只做"可自动修"列里的修复，并作为一次 `[<agent>] lint` 提交。
 
-内容检查不包含 inbox、meta、superseded、`_guide` 等特殊页。原 LintIssue 字段保持不变，新增可选 severity/pages/similarity/token：overlap 为 warning，最多 20 对；fact_repeat 为 info，按 token 聚合、按涉及页数降序最多 10 条，消息最多展示 10 页（结构化 pages 保留全部）。关键事实规则表在 `search/facts.ts`：合法 IPv4、两至三段数字版本（v 前缀可带四段）、Windows 绝对路径（斜线统一且大小写归一）、Unix 绝对路径、1–65535 的冒号端口；忽略普通 URL 和时钟时间。每页每 token 只计一次；疑似凭据页不输出 token。仅链接里引用 IP 不会触发 overlap；fact_repeat 可以提示，调用方须判断是否合理引用。
+内容检查不包含 inbox、meta、`_guide` 等特殊页。LintIssue 包含可选 severity/pages/similarity/token：overlap 为 warning，最多 20 对；fact_repeat 为 info，按 token 聚合、按涉及页数降序最多 10 条，消息最多展示 10 页（结构化 pages 保留全部）。关键事实规则表在 `search/facts.ts`：合法 IPv4、两至三段数字版本（v 前缀可带四段）、Windows 绝对路径（斜线统一且大小写归一）、Unix 绝对路径、1–65535 的冒号端口；忽略普通 URL 和时钟时间。每页每 token 只计一次；疑似凭据页不输出 token。仅链接里引用 IP 不会触发 overlap；fact_repeat 可以提示，调用方须判断是否合理引用。
 
 ## 7. 配置
 
@@ -247,7 +247,7 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 { "schemaVersion": 1, "name": "我的记忆库", "created": "2026-10-14", "settings": { "staleDays": 90, "contextBudget": 4096, "autoPush": false } }
 ```
 
-没有 `memwiki.json` 的目录不是库：除 `init` 外的命令都报错并提示先运行 `dsh-memwiki init`。`schemaVersion` 高于程序支持的版本时只读打开并警告。
+没有 `memwiki.json` 的目录不是库：除 `init` 外的命令都报错并提示先运行 `dsh-memwiki init`。`schemaVersion` 不受支持时拒绝打开。
 
 ## 8. 对外接口
 
@@ -258,22 +258,22 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 | 工具 | 作用 |
 |---|---|
 | `memwiki_context` | 返回精简上下文（§6.2），参数 `project?` |
-| `memwiki_search` | 检索（§5），参数 `query`、`type?`、`tags?`、`project?`、`limit?`(默认 8)、`includeSuperseded?` |
+| `memwiki_search` | 检索（§5），参数 `query`、`type?`、`tags?`、`project?`、`limit?`(默认 8) |
 | `memwiki_read` | 读页面：页头、正文、rev、反向链接、断链、"记录于 N 天前"提示；参数 `page`（ID/标题/别名） |
 | `memwiki_write` | 写入（§4.1），参数 `page`、`mode`、`rev?`、`body?`/`text?`/`old?`/`new?`/`heading?`/`meta?`、`reason`、`source?` |
 | `memwiki_remember` | 快速记录：追加到 `inbox/YYYY-MM.md`，同时返回最相关的 3 个已有页面，提示调用方考虑直接更新它们 |
 | `memwiki_move` | 改名/移动并改写链接 |
-| `memwiki_merge` | 参数 from[]、into、rev、body?、meta?、reason；合并并保留源页跳转，见 §4.6 |
+| `memwiki_merge` | 参数 from[]、into、rev、body?、meta?、reason；合并并删除源文件，见 §4.6 |
 | `memwiki_verify` | 参数 page、note?；核实日期，stale 恢复 active，无需 rev |
 | `memwiki_feedback` | action=add（默认，kind/title/scenario/expected/actual）、list（all?）、resolve（id/resolution），见 §13 |
-| `memwiki_usage` | days? 默认 7，返回各事件次数与零结果查询 Top 10 |
+| `memwiki_usage` | days? 默认 7，返回事件范围说明、各事件次数与零结果查询 Top 10 |
 | `memwiki_delete` / `memwiki_restore` | 删除到回收站 / 从回收站恢复 |
 | `memwiki_lint` | 体检，参数 `fix?` |
 | `memwiki_log` | 最近的变更，参数 `limit?` |
 
-- 服务端 `instructions`（DSH 会注入系统提示）仅保留核心摘要，不超过 1.5 KB；细则见 `_guide`，工具不好用时用 memwiki_feedback 记下。memwiki_write 新增可选 force（仅 create 使用），reason 必填。
-- `memwiki_write` 任何模式都可以顺手改 title/summary：顶层参数合并到 meta patch 并优先于同名 meta 字段。meta 可为对象或 JSON 字符串，解析失败或结果不是对象时返回带原因的 INVALID_META；其中 tags/aliases 的逗号分隔字符串会去掉首尾空白、空项并转成数组。meta 模式也可仅传 title/summary；append 修改页头时必须带 rev。
-- MCP prompts：`memwiki-ingest`、兼容保留 `memwiki-lint`，新增 `memwiki-curate`：lint → 判断 overlap/fact_repeat 归属并 merge/edit → stale 核实后 verify、否则标待核实 → inbox 归档 → open 反馈和 usage 汇总（只汇报不改代码）→ 再次 lint。纠正优先于补充，只写当前正确说法，删除前确认已在归属页存在，不改写 git 历史。
+- 服务端 `instructions`（DSH 会注入系统提示）仅保留核心摘要，不超过 1.5 KB；细则见 `_guide`，工具不好用时用 memwiki_feedback 记下。memwiki_write 可选 force（仅 create 使用），reason 必填。
+- `memwiki_write` 任何模式都可以顺手改 title/summary：顶层参数合并到 meta patch 并优先于同名 meta 字段。meta 必须是对象，其中 tags/aliases 必须是字符串数组，字段为 null 时删除；不符合字段契约的写入会被拒绝。meta 模式也可仅传 title/summary；append 使用 text 传正文，修改页头时必须带 rev。
+- MCP prompt：`memwiki-curate`：lint → 判断 overlap/fact_repeat 归属并 merge/edit → stale 核实后 verify、否则标待核实 → inbox 归档 → open 反馈和 usage 汇总（只汇报不改代码）→ 再次 lint。纠正优先于补充，只写当前正确说法，删除前确认已在归属页存在，不改写 git 历史。
 - 写入方 ID 来自配置（`MEMWIKI_AGENT`），每个客户端配置各自的值。
 - 工具返回中文为主的纯文本（便于模型阅读），错误返回 `isError` 并带错误码。
 
@@ -356,7 +356,7 @@ T2 不依赖 T1 的实现：只用 `types.ts` 里的 `PageRecord`（已解析好
 - host 独立入口 `src/dsh/host.ts` → `lib/dsh-host.js`，公共 API `lib/index.js` 也导出 host 插件。patch 的 host 条目保持包名 `dsh-memwiki`；文件路径会导致 DSH 插件列表读取失败。client-modules 按所属 package.json 发现 `dsh.client`（普通子路径不会被它扫描）。
 - `/api/dsh-memwiki/config` GET/PUT；`status` GET；`lint` POST；`secrets` GET/POST/DELETE；`secrets/log` GET；`secrets/reveal` 仅 POST，请求 `{ name }`，通过 `SecretStore.getWithScope` 返回 `{ name, scope, value }` 并审计查看操作。路由只接受 loopback 与浏览器同源请求，响应 no-store；其他凭据接口仍不返回值，错误信息不含值。HTTP 无关服务和分发函数可单测。
 - 状态/体检直接读 Store、manifest、links、log、git 和 lintRecords；不调用会写索引/启动监视器的 Memwiki.open，不修复、不提交、不推送。
-- client `src/client/index.ts` → `lib/client.js`，`dsh.client` 与 `exports["./client"]` 注册浏览器半。按 trilium 兼容规则只硬注入 slots + locale，注册 settings.section（id=memwiki，与 host 命名空间分开），不用 settings.plugin.item / dsh-client-runtime / settingsScope；挂载失败仅记录固定诊断，避免 GUI 崩溃。
+- client `src/client/index.ts` → `lib/client.js`，`dsh.client` 与 `exports["./client"]` 注册浏览器半。通过 slots + locale 注入宿主接口，注册 settings.section（id=memwiki，与 host 命名空间分开），不用 settings.plugin.item / dsh-client-runtime / settingsScope；挂载失败仅记录固定诊断，避免 GUI 崩溃。
 - 卡片沿用 trilium 的 DSH CSS 变量、输入框和按钮风格，桌面布局，中文；密码输入仅用于写入并在提交时清空，凭据列表只含元数据。用户主动查看后在该行以等宽字体显示明文，同一时间只显示一条；隐藏会移除状态中的值并使未完成的查看请求失效。
 
 ## 13. 反馈与使用信号（0.2.0）
@@ -366,7 +366,7 @@ T2 不依赖 T1 的实现：只用 `types.ts` 里的 `PageRecord`（已解析好
 - 门面捕获搜索零结果 SEARCH_ZERO、CONFLICT、SECRET_DETECTED、EDIT_NOT_FOUND、AMBIGUOUS_EDIT、SIMILAR_EXISTS，以及成功强制新建 FORCE_CREATE。MCP/CLI 共用这条路径；不对凭据工具取用记录 usage。SECRET_DETECTED 仅记录扫描规则类别，绝不保存匹配内容、错误文本或写入输入。
 - 使用信号为 `<vault>/.memwiki/usage.jsonl`，模板 gitignore 已忽略 `.memwiki/`。字段限于 UTC 时间、agent、事件、查询（仅 SEARCH_ZERO，最长 500 字符，疑似凭据整条脱敏）、页面 ID 的 SHA-256 前 12 位哈希、敏感扫描规则名。SIMILAR_EXISTS 与后续 FORCE_CREATE 通过同一 pageKey 关联；没有 FORCE_CREATE 记录代表未观察到成功强制创建。绝不记录页面正文、写入 reason/source、查询之外的用户内容、凭据值。
 - 写入在独立锁内排队追加；下一行使文件超过 1 MiB 时将当前文件轮转为 usage.jsonl.1，覆盖旧备份，只保留一代。close 和 usage 汇总会等待本进程队列清空；统计读取两代文件，按 days 过滤，忽略损坏行。日志失败只发固定警告，不改变业务返回，不回显内容。
-- `usage [--days 7]` / memwiki_usage 输出各事件次数与零结果查询 Top 10（次数降序）；usage 仅是工具改进线索，不能自动据此改代码。
+- `usage [--days 7]` / memwiki_usage 输出事件范围说明、各事件次数与零结果查询 Top 10（次数降序）；不统计正常搜索、阅读或其他成功写入，计数为空时明确提示“这段时间没有发生这些事件”。usage 仅是工具改进线索，不能自动据此改代码。
 
 ## 14. 规则的唯一正文
 

@@ -41,18 +41,17 @@ test('applies exact-phrase boosts in title, alias and body', () => {
 
 test('project boosts without filtering; status multipliers, defaults and timestamps are respected', () => {
   const engine = createSearchEngine()
-  const pages = ['active', 'draft', 'stale', 'superseded'].map((status, i) => record(`topics/${i}`, {
-    title: 'needle', status: status as 'active' | 'draft' | 'stale' | 'superseded', project: 'netx',
+  const pages = ['active', 'stale'].map((status, i) => record(`topics/${i}`, {
+    title: 'needle', status: status as 'active' | 'stale', project: 'netx',
   }))
   pages.push(record('projects/netx/inferred', { title: 'needle' }), record('topics/other', { title: 'needle', project: 'other' }))
   engine.load(pages)
-  const all = engine.search({ query: 'needle', includeSuperseded: true, project: 'netx' })
+  const all = engine.search({ query: 'needle', project: 'netx' })
   const base = all.find(h => h.id === 'topics/0')!.score
-  for (const [i, factor] of [1, 0.8, 0.4, 0.4].entries()) assert.ok(Math.abs(all.find(h => h.id === `topics/${i}`)!.score / base - factor) < 1e-12)
+  for (const [i, factor] of [1, 0.4].entries()) assert.ok(Math.abs(all.find(h => h.id === `topics/${i}`)!.score / base - factor) < 1e-12)
   assert.ok(all.some(h => h.id === 'topics/other'))
   assert.equal(all.find(h => h.id === 'projects/netx/inferred')!.score, base)
   assert.ok(Math.abs(base / all.find(h => h.id === 'topics/other')!.score - 1.3) < 1e-12)
-  assert.ok(!engine.search({ query: 'needle' }).some(h => h.status === 'superseded'))
   engine.load([record('topics/old', { title: 'needle', updated: '2026-10-01T00:00:00Z' }), record('topics/new', { title: 'needle', updated: '2026-10-02T00:00:00+08:00' })])
   assert.equal(engine.search({ query: 'needle' })[0].id, 'topics/new')
 })
@@ -90,12 +89,12 @@ test('incremental mutations equal full reload, including field averages and ID c
   incremental.load(pages)
   const compare = () => {
     full.load(pages)
-    for (const query of [{ query: 'alpha beta' }, { query: '乱码' }, { query: 'alpha', project: 'netx', includeSuperseded: true }] satisfies SearchQuery[]) {
+    for (const query of [{ query: 'alpha beta' }, { query: '乱码' }, { query: 'alpha', project: 'netx' }] satisfies SearchQuery[]) {
       assert.deepEqual(incremental.search(query), full.search(query))
     }
   }
   compare()
-  const updated = record('topics/A', { title: '中文乱码 alpha', project: 'netx', aliases: ['beta'], status: 'draft' }, 'beta '.repeat(200))
+  const updated = record('topics/A', { title: '中文乱码 alpha', project: 'netx', aliases: ['beta'], status: 'stale' }, 'beta '.repeat(200))
   pages = [updated, ...pages.slice(1)]; incremental.upsert(updated); compare()
   pages = pages.filter(p => p.id !== 'topics/b'); incremental.remove('TOPICS/B'); compare()
   incremental.remove('absent'); compare()

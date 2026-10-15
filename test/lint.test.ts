@@ -9,7 +9,7 @@ const opts: LintOptions = { now: new Date('2026-10-14T12:00:00+08:00'), staleDay
 test('reports broken links and orphans using resolved IDs, with directory/pinned exceptions', () => {
   const source = record('topics/source'), target = record('topics/target'), self = record('topics/self')
   source.links = ['TOPICS/TARGET']; source.brokenLinks = ['gone', 'gone']; self.links = ['topics/self']
-  const pages = [source, target, self, record('user/u'), record('rules/r'), record('inbox/i'), record('topics/p', { pinned: true })]
+  const pages = [source, target, self, record('user/u'), record('rules/r'), record('inbox/i'), record('meta/feedback/2026-10'), record('META/other'), record('topics/p', { pinned: true })]
   const issues = lintRecords(pages, opts)
   assert.deepEqual(issues.filter(i => i.code === 'broken_link').map(i => i.page), ['topics/source'])
   assert.deepEqual(issues.filter(i => i.code === 'orphan').map(i => i.page), ['topics/source', 'topics/self'])
@@ -24,7 +24,7 @@ test('duplicates include title/alias collisions case-insensitively, but not repe
 test('checks missing summary, parsing failures, required fields, enums, dates and optional fields', () => {
   const bad = record('topics/bad', { summary: '', type: 'bad' as never, status: 'bad' as never, created: '2026-02-30',
     updated: '2026-10-14', updated_by: '', tags: 'tag' as never, aliases: [1] as never, verified: 'yesterday', pinned: 'yes' as never })
-  const parsed = record('topics/parser'); parsed.metaError = 'raw private data must not be echoed'
+  const parsed = record('topics/parser'); parsed.metaIssues = [{ field: 'meta', reason: 'raw private data must not be echoed' }]
   const issues = lintRecords([bad, parsed], opts)
   assert.equal(issues.filter(i => i.code === 'invalid_meta').length, 2)
   assert.equal(issues.filter(i => i.code === 'missing_summary').length, 1)
@@ -33,24 +33,18 @@ test('checks missing summary, parsing failures, required fields, enums, dates an
   assert.equal(issues.find(i => i.page === parsed.id && i.code === 'invalid_meta')!.fixable, false)
 })
 
-test('staleness prefers verified, uses exact day boundaries, and avoids already stale/superseded pages', () => {
+test('staleness prefers verified, uses exact day boundaries, and avoids already stale pages', () => {
   const cutoff = new Date(opts.now.getTime() - 90 * 86400000).toISOString()
   const pages = [record('topics/old', { updated: '2026-01-01T00:00:00Z' }), record('topics/verified-old', { verified: '2026-01-01' }),
     record('topics/verified-new', { updated: '2026-01-01T00:00:00Z', verified: '2026-10-14' }),
-    record('topics/cutoff', { updated: cutoff }), record('topics/stale', { status: 'stale', updated: '2026-01-01T00:00:00Z' }),
-    record('topics/superseded', { status: 'superseded', superseded_by: 'topics/old', updated: '2026-01-01T00:00:00Z' })]
+    record('topics/cutoff', { updated: cutoff }), record('topics/stale', { status: 'stale', updated: '2026-01-01T00:00:00Z' })]
   assert.deepEqual(lintRecords(pages, opts).filter(i => i.code === 'stale_candidate').map(i => i.page), ['topics/old', 'topics/verified-old'])
 })
 
-test('checks superseded targets and measures only body UTF-8 bytes for oversized', () => {
-  const valid = record('topics/valid', { status: 'superseded', superseded_by: 'TOPICS/TARGET' })
-  const missing = record('topics/missing', { status: 'superseded', superseded_by: 'absent' })
-  const absent = record('topics/absent', { status: 'superseded' })
+test('measures only body UTF-8 bytes for oversized', () => {
   const exact = record('topics/exact', {}, 'a'.repeat(20480)); exact.bytes = 999999
   const large = record('topics/large', {}, '中'.repeat(7000)); large.bytes = 1
-  const issues = lintRecords([valid, missing, absent, record('topics/target'), exact, large], opts)
-  assert.deepEqual(issues.filter(i => i.code === 'superseded_target_missing').map(i => i.page), ['topics/missing'])
-  assert.ok(issues.some(i => i.code === 'invalid_meta' && i.page === absent.id))
+  const issues = lintRecords([exact, large], opts)
   assert.deepEqual(issues.filter(i => i.code === 'oversized').map(i => i.page), ['topics/large'])
 })
 
@@ -86,7 +80,7 @@ test('fixes inferable defaults only, returns undefined for manual issues, and do
   assert.deepEqual(fixFor({ ...issue, code: 'stale_candidate' }, page), { status: 'stale' })
   assert.deepEqual(page, original)
   assert.ok(lintRecords([page], opts).find(i => i.code === 'invalid_meta')!.fixable)
-  for (const code of ['broken_link', 'orphan', 'duplicate_title', 'missing_summary', 'superseded_target_missing', 'oversized', 'inbox_backlog', 'secret_suspect', 'uncommitted'] as const) {
+  for (const code of ['broken_link', 'orphan', 'duplicate_title', 'missing_summary', 'markdown_link', 'oversized', 'inbox_backlog', 'secret_suspect', 'uncommitted'] as const) {
     assert.equal(fixFor({ ...issue, code }, page), undefined)
   }
   assert.equal(fixFor({ ...issue, page: 'another' }, page), undefined)
@@ -94,4 +88,11 @@ test('fixes inferable defaults only, returns undefined for manual issues, and do
   assert.equal(fixFor({ ...issue, page: 'unknown/x' }, record('unknown/x', { type: undefined as never })), undefined)
   const repaired = { ...page, meta: { ...page.meta, ...fixFor(issue, page)! } } as typeof page
   assert.ok(!lintRecords([repaired], opts).some(i => i.code === 'invalid_meta'))
+})
+
+test('Markdown link lint distinguishes automatic conversion from manual correction', () => {
+  const pages = [record('topics/auto', {}, '[链接](./target.md)'), record('topics/manual', {}, '[越界](../../outside.md)'),
+    record('topics/code', {}, '`[代码](target.md)` [网页](https://example.com/page.md) ![图片](image.md)')]
+  assert.deepEqual(lintRecords(pages, opts).filter(i => i.code === 'markdown_link').map(i => [i.page, i.fixable]),
+    [['topics/auto', true], ['topics/manual', false]])
 })

@@ -11,7 +11,7 @@ const INSTRUCTIONS = `共享记忆 wiki 规则：
 2. 一个事实一个归属；纠正优先于补充，只写当前正确说法。
 3. 页面不写凭据值，只写 secret:<名字>；核实后调用 memwiki_verify。
 4. CONFLICT 时重新 memwiki_read，在最新 rev 上再写。
-5. 拿不准归属用 memwiki_remember 进 inbox；禁止改写 git 历史。
+5. 拿不准归属用 memwiki_remember 进 inbox；merge 直接删除源文件、迁移标题/别名并改写双链；先 lint fix 将相对 Markdown 页面链接转为双链；禁止改写 git 历史。
 细则见 _guide；任务开始若没读过就 memwiki_read _guide；工具不好用时用 memwiki_feedback 记下。`
 
 function text(body: string, isError = false) {
@@ -27,23 +27,6 @@ function formatError(err: unknown): ReturnType<typeof text> {
     return text(`${err.code}：${err.message}${extra}${hint}`, true)
   }
   return text(`ERROR：${err instanceof Error ? err.message : String(err)}`, true)
-}
-
-function normalizeMeta(value: Record<string, unknown> | string | undefined): MetaPatch | undefined {
-  if (value === undefined) return undefined
-  let parsed: unknown = value
-  if (typeof value === 'string') {
-    try { parsed = JSON.parse(value) }
-    catch { throw new MemwikiError('INVALID_META', 'meta JSON 解析失败：必须是有效 JSON 字符串', { errors: [{ field: 'meta', reason: 'JSON 解析失败' }] }) }
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new MemwikiError('INVALID_META', 'meta 必须是对象（JSON 不能是数组、null 或标量）', { errors: [{ field: 'meta', reason: '必须是对象' }] })
-  }
-  const patch = { ...parsed } as MetaPatch
-  for (const key of ['tags', 'aliases'] as const) {
-    if (typeof patch[key] === 'string') patch[key] = (patch[key] as string).split(/[,，]/).map(s => s.trim()).filter(Boolean)
-  }
-  return patch
 }
 
 function pad(n: number) { return String(n).padStart(2, '0') }
@@ -65,7 +48,6 @@ function formatMeta(page: { meta: Record<string, unknown>; rev: string }): strin
   if (m.project) lines.push(`项目：${m.project}`)
   if (m.pinned) lines.push('置顶：是')
   if (Array.isArray(m.sources) && m.sources.length) lines.push(`来源：${m.sources.join(', ')}`)
-  if (m.superseded_by) lines.push(`替代：${m.superseded_by}`)
   lines.push(`rev：${page.rev}`)
   return lines
 }
@@ -73,7 +55,7 @@ function formatMeta(page: { meta: Record<string, unknown>; rev: string }): strin
 /** Builds an MCP server bound to an open Memwiki instance (§8.1). */
 export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ vaultDir: wiki.config.dir })): McpServer {
   const server = new McpServer(
-    { name: 'memwiki', version: '0.2.1' },
+    { name: 'memwiki', version: '0.3.0' },
     { instructions: INSTRUCTIONS, capabilities: { tools: {}, prompts: {} } },
   )
 
@@ -120,7 +102,6 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
       tags: z.array(z.string()).optional().describe('必须全部包含的标签'),
       project: z.string().optional().describe('当前项目名（加权，不过滤）'),
       limit: z.number().int().positive().optional().describe('返回条数，默认 8'),
-      includeSuperseded: z.boolean().optional().describe('是否包含已替代页面，默认否'),
     },
   }, async (args) => {
     const hits = wiki.search({
@@ -129,7 +110,6 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
       tags: args.tags,
       project: args.project,
       limit: args.limit ?? 8,
-      includeSuperseded: args.includeSuperseded,
     })
     if (!hits.length) return text('没有命中。')
     const lines = hits.map((h, i) => [
@@ -183,7 +163,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
       old: z.string().optional().describe('edit：要被替换的原文，必须唯一'),
       new: z.string().optional().describe('edit：替换后的文字'),
       heading: z.string().optional().describe('section 要替换的标题；append 时表示追加到这一节末尾'),
-      meta: z.union([z.record(z.string(), z.unknown()), z.string()]).optional().describe('页头字段对象或 JSON 字符串，如 {"type":"howto","tags":["windows"]}；tags/aliases 也可传逗号分隔字符串；值为 null 表示删除该字段。create 时可指定 type（user/rule/project/topic/howto/decision/reference）'),
+      meta: z.record(z.string(), z.unknown()).optional().describe('页头字段对象，如 {"type":"howto","tags":["windows"]}；tags/aliases 必须是字符串数组；值为 null 表示删除该字段'),
       title: z.string().optional().describe('页面标题；create 必填，任何模式均可修改'),
       summary: z.string().optional().describe('一句话摘要（≤120 个字符，超了会被拒；能单独看懂，会出现在所有 AI 的开场目录里）；create 必填，任何模式均可修改'),
       force: z.boolean().optional().describe('create：确实是不同主题时跳过相似拦截；必须写明 reason'),
@@ -194,7 +174,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     try {
       const id = args.page
       const ctx = { agent: wiki.config.agent, reason: args.reason, source: args.source }
-      let meta = normalizeMeta(args.meta)
+      let meta = args.meta as MetaPatch | undefined
       if (args.title !== undefined || args.summary !== undefined) {
         meta = { ...meta, ...(args.title !== undefined ? { title: args.title } : {}), ...(args.summary !== undefined ? { summary: args.summary } : {}) }
       }
@@ -212,7 +192,8 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
           op = { kind: 'replace', id, rev: args.rev, body: args.body ?? '', meta }
           break
         case 'append':
-          op = { kind: 'append', id, text: args.text ?? args.body ?? '', section: args.heading, rev: args.rev, meta }
+          if (args.text === undefined) throw new MemwikiError('INVALID_META', 'append 需要 text')
+          op = { kind: 'append', id, text: args.text, section: args.heading, rev: args.rev, meta }
           break
         case 'edit':
           if (!args.rev) throw new MemwikiError('INVALID_META', 'edit 需要 rev')
@@ -257,13 +238,13 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
   })
 
   server.registerTool('memwiki_merge', {
-    description: '把多个旧页面合并到一个归属页。先确认原内容已在归属页；body 由你整理，不传则保留目标正文。旧页保留 superseded 跳转，链接自动改写，一次提交。',
+    description: '把多个页面合并到一个归属页。先 lint fix 将相对 Markdown 页面链接转为双链，并确认独有内容已在归属页；body 由你整理，不传则保留目标正文。源文件直接删除，标题和别名并入目标 aliases，全库双链自动改写，一次提交。',
     inputSchema: { from: z.array(z.string()).min(1), into: z.string(), rev: z.string(), body: z.string().optional(),
       meta: z.record(z.string(), z.unknown()).optional(), reason: z.string().trim().min(1) },
   }, async ({ from, into, rev, body, meta, reason }) => {
     try {
       const { result } = await wiki.merge({ from, into, rev, body, meta: meta as MetaPatch | undefined, ctx: { agent: wiki.config.agent, reason } })
-      return text(`已合并 ${result.from.join('、')} → [[${result.page.id}]]；旧页保留跳转。\nrev：${result.page.rev}`)
+      return text(`已合并 ${result.from.join('、')} → [[${result.page.id}]]；源文件已删除。\nrev：${result.page.rev}`)
     } catch (e) { return formatError(e) }
   })
 
@@ -298,7 +279,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
   })
 
   server.registerTool('memwiki_usage', {
-    description: '汇总本地使用信号：各事件次数及零结果查询 Top 10；不含页面正文或凭据。用于整理时汇报改进线索。',
+    description: '仅汇总零结果搜索、版本冲突、密钥拦截、编辑找不到/不唯一、相似拦截及成功强制新建；不统计正常搜索、阅读或其他成功写入。输出事件次数、零结果查询 Top 10；无事件时明确说明。不含页面正文或凭据。',
     inputSchema: { days: z.number().positive().optional() },
   }, async ({ days }) => {
     try { return text(JSON.stringify(await wiki.usage(days), null, 2)) }
@@ -306,7 +287,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
   })
 
   server.registerTool('memwiki_move', {
-    description: '改名或移动页面，所有指向它的 [[链接]] 会自动改写。',
+    description: '改名或移动页面，所有指向它的 [[链接]] 会自动改写；先 lint fix 将相对 Markdown 页面链接转为双链。',
     inputSchema: {
       page: z.string().describe('源页面引用'),
       to: z.string().describe('目标页面 ID'),
@@ -320,7 +301,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
   })
 
   server.registerTool('memwiki_delete', {
-    description: '把页面移到回收站（可用 memwiki_restore 恢复）。内容只是过时的话，优先用 memwiki_write 的 meta 模式把 status 改成 stale 或 superseded，而不是删除。',
+    description: '把页面移到回收站（可用 memwiki_restore 恢复）。待核实内容用 status: stale；被归属页替代的内容用 memwiki_merge。',
     inputSchema: {
       page: z.string().describe('页面引用'),
       reason: z.string().describe('原因'),
@@ -346,7 +327,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
   })
 
   server.registerTool('memwiki_lint', {
-    description: '体检记忆库：格式、链接、过时、内容 overlap、关键事实 fact_repeat、open 反馈与 git。fix=true 只自动修安全项；内容重叠、事实重复与反馈汇总不可自动修。',
+    description: '体检记忆库：格式、双链、Markdown 页面链接、过时、overlap、fact_repeat、open 反馈与 git。fix=true 自动将相对 Markdown 页面链接转为双链并修复安全项；内容重叠、事实重复与反馈汇总不可自动修。',
     inputSchema: {
       fix: z.boolean().optional().describe('是否自动修复，默认否'),
     },
@@ -377,23 +358,6 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     } catch (e) { return formatError(e) }
   })
 
-  server.registerPrompt('memwiki-ingest', {
-    description: '把 inbox 整理进正式页面的工作流',
-  }, async () => ({
-    messages: [{
-      role: 'user' as const,
-      content: {
-        type: 'text' as const,
-        text: `请按以下步骤整理记忆 inbox：
-1. 调用 memwiki_context，确认 inbox 未整理条目数。
-2. 用 memwiki_read 打开当前月份的 inbox/YYYY-MM 页面。
-3. 对每条记录：先 memwiki_search 找相关正式页面；有则 memwiki_read 拿 rev，用 memwiki_write 更新；没有则按归属新建（user/rules/projects/topics/howto/decisions/reference）。
-4. 已归入的条目从 inbox 正文中删掉（edit 或 replace）。
-5. 完成后 memwiki_lint 检查。`,
-      },
-    }],
-  }))
-
   server.registerPrompt('memwiki-curate', {
     description: '一次完成内容收敛、核实、inbox 归档和反馈/使用信号汇总',
   }, async () => ({ messages: [{ role: 'user' as const, content: { type: 'text' as const, text: `请整理记忆库：
@@ -403,22 +367,6 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
 4. 搜索相关页后归档 inbox，确认信息已归入再移除原条目。
 5. 用 memwiki_feedback action=list 与 memwiki_usage 汇总 open 反馈及使用信号；只汇报不改代码。工具问题、规则不清或有价值的搜索缺口用 feedback 留下可复现的场景。
 6. 再跑 lint，汇报删并修改摘要和剩余不确定项。禁止改写 git 历史。` } }] }))
-
-  server.registerPrompt('memwiki-lint', {
-    description: '体检并修复记忆库的工作流',
-  }, async () => ({
-    messages: [{
-      role: 'user' as const,
-      content: {
-        type: 'text' as const,
-        text: `请体检记忆库：
-1. 调用 memwiki_lint（不要带 fix），汇报问题列表。
-2. 对可自动修的项，征得确认后（或用户已要求修复时）再 memwiki_lint fix=true。
-3. 其余问题逐条处理：断链、孤立页、重复标题、过期内容等，必要时询问用户。
-4. 修复后再跑一次 memwiki_lint 确认。`,
-      },
-    }],
-  }))
 
   return server
 }

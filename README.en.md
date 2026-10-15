@@ -64,7 +64,7 @@ Precedence: CLI > env > vault `memwiki.json` `settings` > defaults.
 | `memwiki_write` | Write (create/replace/append/edit/section/meta); similar creates require justified force |
 | `memwiki_remember` | Quick inbox capture + related pages |
 | `memwiki_move` | Rename/move and rewrite links |
-| `memwiki_merge` | Merge into one owner, rewrite links, retain source redirects; optional body/meta and required target rev |
+| `memwiki_merge` | Merge into one owner, rewrite links, delete source files and transfer titles/aliases; optional body/meta and required target rev |
 | `memwiki_verify` | Refresh verified date and restore stale to active, without rev |
 | `memwiki_feedback` | add/list/resolve monthly tool and rule feedback |
 | `memwiki_usage` | Local event counts and Top 10 zero-result queries |
@@ -72,7 +72,7 @@ Precedence: CLI > env > vault `memwiki.json` `settings` > defaults.
 | `memwiki_lint` | Health check, including overlap/fact_repeat/feedback_open; those three cannot be auto-fixed |
 | `memwiki_log` | Recent changes |
 
-Prompts: `memwiki-ingest`, `memwiki-lint`, `memwiki-curate` (converge content, verify, archive inbox, report feedback and usage; no code changes). The vault's `_guide` is the single source of detailed rules; the skill and server instructions are summaries.
+Prompt: `memwiki-curate` (converge content, verify, archive inbox, report feedback and usage; no code changes). The vault's `_guide` is the single source of detailed rules; the skill and server instructions are summaries.
 
 ## CLI
 
@@ -97,7 +97,7 @@ dsh-memwiki install-skill [--target ...]
 
 ## Vault format
 
-Markdown + YAML frontmatter + `[[wikilinks]]`. Layout: [docs/DESIGN.md](docs/DESIGN.md) §2–§3. Do not hand-edit generated `index.md` / `log.md`.
+Markdown + YAML frontmatter + `[[wikilinks]]`; status is `active` or `stale`. Lint reports relative Markdown page links as `markdown_link`; `fix: true` converts them to vault-relative wikilinks, resolving paths relative to the current page and preserving labels/headings. Run lint fixes before move/merge so these references participate in backlinks, broken-link checks and rewrites. MCP meta must be an object, tags/aliases must be string arrays, and append takes text. Layout: [docs/DESIGN.md](docs/DESIGN.md) §2–§3. Do not hand-edit generated `index.md` / `log.md`.
 
 ## FAQ
 
@@ -105,9 +105,9 @@ Markdown + YAML frontmatter + `[[wikilinks]]`. Layout: [docs/DESIGN.md](docs/DES
 
 **SIMILAR_EXISTS**: Read up to three candidates and update an existing page. Use `force: true` only for a distinct topic with a nonempty reason, preserved verbatim in the log. Inbox capture is exempt.
 
-**Maintenance**: One fact has one owner; correct existing pages before adding information. Supply the consolidated merge body yourself and confirm all unique information is retained before removing source content. Sources remain superseded redirects; git retains the original text. Repeated fact tokens are advisory; IP addresses in reference links can be normal.
+**Maintenance**: One fact has one owner; correct existing pages before adding information. Supply the consolidated merge body yourself and confirm all unique information is retained before removing source content. Source files are deleted and their titles/aliases are added to the owner; git retains the original text. Repeated fact tokens are advisory; IP addresses in reference links can be normal.
 
-**Feedback and usage**: Monthly feedback pages live in `meta/feedback/YYYY-MM.md` (type=meta); context shows only the open count. Git-ignored `.memwiki/usage.jsonl` rotates at 1 MB, keeping one previous file. Signals contain event counts, redacted queries and hashed page IDs, never page bodies, write reasons or credential values.
+**Feedback and usage**: Monthly feedback pages live in `meta/feedback/YYYY-MM.md` (type=meta); context shows only the open count. Git-ignored `.memwiki/usage.jsonl` rotates at 1 MB, keeping one previous file. Only zero-result searches, conflicts, secret blocks, missing/ambiguous edits, similar-create blocks and successful forced creates are recorded. Normal searches, reads and other successful writes are not counted. Empty windows explicitly say that none of these events occurred. Signals contain redacted queries and hashed page IDs, never page bodies, write reasons or credential values.
 
 **SECRET_DETECTED**: Key-like content rejected; store where to get secrets, not the secrets.
 

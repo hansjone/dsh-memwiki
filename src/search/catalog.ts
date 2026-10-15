@@ -46,7 +46,7 @@ export function buildContext(records: PageRecord[], opts: ContextOptions): strin
   const requested = opts.budgetBytes ?? 4096
   const budget = Number.isFinite(requested) ? Math.max(0, Math.floor(requested)) : 4096
   // Inbox pages are raw captures; they are summarized by the inbox count footer instead of listed.
-  const pages = records.filter(r => visible(r) && r.meta.type !== 'inbox' && r.meta.status !== 'superseded'
+  const pages = records.filter(r => visible(r) && r.meta.type !== 'inbox'
     && !/^inbox\//iu.test(r.id) && !/^meta\/feedback\//iu.test(r.id))
   const priority = (r: PageRecord) => r.meta.pinned ? 0 : ['rule', 'user'].includes(r.meta.type) ? 1
     : opts.project && (r.meta.project ?? (top(r) === 'projects' ? r.id.split('/')[1] : undefined)) === opts.project ? 2 : 3

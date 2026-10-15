@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import type { MemwikiSettingsCardProps } from './compat.ts'
+import type { MemwikiSettingsCardProps } from './context.ts'
 import type { ConfigView, VaultStatus } from '../dsh/protocol.ts'
 import type { LintIssue } from '../types.ts'
 import type { SecretAccess, SecretMeta } from '../secrets/store.ts'
 import { SecretRevealController, copySecretTemporarily, type RevealState } from './secret-reveal.ts'
 import { zh } from './locales.ts'
 
-export type { MemwikiSettingsFace, MemwikiSettingsCardProps } from './compat.ts'
+export type { MemwikiSettingsFace, MemwikiSettingsCardProps } from './context.ts'
 const field: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 8, padding: '14px 0', borderTop: '1px solid var(--dsw-alias-border-l2)' }
 const input: CSSProperties = { height: 34, borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-3)', color: 'var(--dsw-alias-label-primary)', padding: '0 12px', fontSize: 13 }
 const button: CSSProperties = { border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, padding: '6px 16px', background: 'var(--dsw-alias-bg-layer-3)', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer', fontSize: 13 }

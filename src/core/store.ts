@@ -182,7 +182,7 @@ export class Store {
       if (findings.length) throw new MemwikiError('SECRET_DETECTED', '内容包含敏感信息，拒绝写入', { findings })
     }
     const parsed = parsePage(raw)
-    if (parsed.metaError) throw new MemwikiError('INVALID_META', parsed.metaError, { errors: parsed.metaIssues ?? [{ field: 'meta', reason: parsed.metaError }] })
+    if (parsed.metaIssues?.length) throw new MemwikiError('INVALID_META', parsed.metaIssues.map(e => `${e.field} ${e.reason}`).join('；'), { errors: parsed.metaIssues })
     return raw
   }
 
@@ -244,7 +244,7 @@ export class Store {
     return op.kind === 'create' ? withLock(this.config.dir, STRUCTURE_LOCK, run) : run()
   }
 
-  /** Validates every input and prepares every output before the first write. Sources stay as redirects. */
+  /** Validates inputs and prepares outputs before writing; then deletes the merged source files. */
   async merge(op: MergeOp): Promise<MergeResult> {
     return withLock(this.config.dir, STRUCTURE_LOCK, async () => {
       if (!op.from.length) throw new MemwikiError('INVALID_META', 'from 不能为空')
@@ -259,7 +259,6 @@ export class Store {
         if (current.rev !== op.rev) throw new MemwikiError('CONFLICT', '目标页面已更新，请重新读取', { rev: current.rev })
         const freshSources = await Promise.all(sources.map(p => this.load(p.id, true)))
         for (const page of [current, ...freshSources]) this.ensurePageId(page.id)
-        if (current.meta.status === 'superseded') throw new MemwikiError('INVALID_META', '不能合并到 superseded 页面')
         const targets = new Set(freshSources.flatMap(p => [p.id, p.meta.title, ...p.meta.aliases]).map(fold))
         const rewrite = (body: string) => rewriteLinks(body, target => targets.has(fold(target)) ? current.id : undefined)
         const nextMeta = applyMetaPatch(current.meta, op.meta ?? {})
@@ -269,26 +268,26 @@ export class Store {
         const aliases = [...(nextMeta.aliases ?? []), ...freshSources.flatMap(p => [p.meta.title, ...p.meta.aliases])]
         nextMeta.aliases = [...new Map(aliases.map(alias => [fold(alias), alias])).values()]
         nextMeta.created = current.meta.created
-        if (nextMeta.status === 'superseded') throw new MemwikiError('INVALID_META', '合并目标必须保留为有效页面')
-        // Superseded stubs relinquish title/alias ownership; exact old IDs still land on a redirect.
         const pending: Array<{ id: string; raw: string }> = []
         const rewritten: string[] = []
         for (const old of snapshot) {
+          if (sourceIds.has(fold(old.id))) continue
           const page = await this.load(old.id, true)
           let body = rewrite(page.body)
           let meta = page.meta
           if (fold(page.id) === fold(current.id)) { body = rewrite(op.body ?? current.body); meta = nextMeta }
-          else if (sourceIds.has(fold(page.id))) {
-            meta = { ...page.meta, title: `已合并：${page.id}`, summary: `已合并到 ${current.id}`, aliases: [], status: 'superseded', superseded_by: current.id }
-            body = `已合并到 [[${current.id}]]\n`
-          } else if (body === page.body) continue
+          else if (body === page.body) continue
           if (body !== page.body) rewritten.push(page.id)
           pending.push({ id: page.id, raw: this.prepare(this.updated(meta, page.id, op.ctx), body) })
         }
         for (const change of pending) await atomicWrite(this.config.dir, idToRelPath(change.id), change.raw)
+        for (const source of freshSources) {
+          await unlink(safeResolve(this.config.dir, idToRelPath(source.id)))
+          this.cache.delete(source.id)
+        }
         const pages = await Promise.all(pending.map(p => this.load(p.id, true)))
         return { page: pages.find(p => fold(p.id) === fold(current.id))!, from: freshSources.map(p => p.id), pages,
-          rewritten, changedPaths: pending.map(p => idToRelPath(p.id)) }
+          rewritten, changedPaths: [...pending.map(p => idToRelPath(p.id)), ...freshSources.map(p => idToRelPath(p.id))] }
       })
     })
   }
@@ -386,7 +385,7 @@ export class Store {
   async restore(trashPath: string, ctx: WriteContext): Promise<WriteResult> {
     const rel = trashPath.replaceAll('\\', '/')
     safeResolve(this.config.dir, rel)
-    const match = /^\.trash\/(.+)\.(\d+)(?:-[a-f0-9-]+)?\.md$/i.exec(rel)
+    const match = /^\.trash\/(.+)\.(\d+)\.md$/i.exec(rel)
     if (!match) throw new MemwikiError('INVALID_ID', '无效的回收站路径')
     return withLock(this.config.dir, STRUCTURE_LOCK, async () => {
       const id = await this.newId(this.ensurePageId(match[1]))

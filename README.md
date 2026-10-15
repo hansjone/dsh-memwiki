@@ -74,15 +74,15 @@ dsh-memwiki install-skill
 | `memwiki_write` | 写入（create/replace/append/edit/section/meta）；create 拦截相似页，可注明 reason 后 force |
 | `memwiki_remember` | 快速记入 inbox，并返回相关页面 |
 | `memwiki_move` | 改名/移动并改写链接 |
-| `memwiki_merge` | 合并到归属页，改写链接并保留旧页跳转；body/meta 可选，带目标 rev |
+| `memwiki_merge` | 合并到归属页，改写双链并直接删除源文件、迁移标题和别名；body/meta 可选，带目标 rev |
 | `memwiki_verify` | 核实后刷新 verified，stale 恢复 active，无需 rev |
 | `memwiki_feedback` | add/list/resolve：记录与处理按月反馈 |
 | `memwiki_usage` | 本地使用信号统计与零结果查询 Top 10 |
 | `memwiki_delete` / `memwiki_restore` | 回收站删除 / 恢复 |
-| `memwiki_lint` | 体检（可 `fix`）；含 overlap、fact_repeat、feedback_open，三项不可自动修 |
+| `memwiki_lint` | 体检（可 `fix`）；含 markdown_link（可自动转双链）及 overlap、fact_repeat、feedback_open（仅提示） |
 | `memwiki_log` | 最近变更 |
 
-Prompts：`memwiki-ingest`（整理 inbox）、`memwiki-lint`（体检修复）、`memwiki-curate`（内容收敛、核实、归档及反馈/使用信号汇总，只汇报不改代码）。规则正文唯一来源是库内 `_guide`；skill 与服务说明只保留摘要。
+Prompt：`memwiki-curate`（内容收敛、核实、归档及反馈/使用信号汇总，只汇报不改代码）。规则正文唯一来源是库内 `_guide`；skill 与服务说明只保留摘要。
 
 ## 命令行
 
@@ -107,7 +107,7 @@ dsh-memwiki install-skill [--target ...]
 
 ## 库的格式
 
-标准 Markdown + YAML 页头 + `[[双链]]`，目录约定见 [docs/DESIGN.md](docs/DESIGN.md) §2–§3。生成文件 `index.md`、`log.md` 勿手改。
+标准 Markdown + YAML 页头 + `[[双链]]`，状态只有 `active` / `stale`。页间引用使用双链；`[文字](相对路径.md)` 会被 lint 报 `markdown_link`，`fix: true` 按当前页目录将其转成双链，随后才参与反链、断链与 move/merge 改写。请先修复再移动或合并。MCP 的 meta 只接受对象，tags/aliases 使用字符串数组，append 正文用 text。目录约定见 [docs/DESIGN.md](docs/DESIGN.md) §2–§3。生成文件 `index.md`、`log.md` 勿手改。
 
 ## 常见问题
 
@@ -115,9 +115,9 @@ dsh-memwiki install-skill [--target ...]
 
 **SIMILAR_EXISTS**：先读最多 3 个相似候选，优先更新已有页；确实不同主题才 `force: true`，reason 必须说明理由并原样记日志。inbox 不拦截。
 
-**内容维护**：一个事实一个归属，纠正优先于补充。merge 的正文由调用方整理；删除源内容前确认已在目标页，旧页保留 superseded 跳转，原文在 git 历史中。fact_repeat 仅为低级别提示，链接引用 IP 不必删。
+**内容维护**：一个事实一个归属，纠正优先于补充。merge 的正文由调用方整理；删除源内容前确认已在目标页，源文件直接删除，源标题和别名并入目标 aliases，原文在 git 历史中。fact_repeat 仅为低级别提示，链接引用 IP 不必删。
 
-**反馈与统计**：反馈在 `meta/feedback/YYYY-MM.md`（type=meta）；context 只提示 open 条数。使用信号在 git 忽略的 `.memwiki/usage.jsonl`，超过 1 MB 轮转一份旧文件；只记事件、脱敏查询及哈希页面标识，不记录正文、写入理由或凭据值。
+**反馈与统计**：反馈在 `meta/feedback/YYYY-MM.md`（type=meta）；context 只提示 open 条数。使用信号在 git 忽略的 `.memwiki/usage.jsonl`，超过 1 MB 轮转一份旧文件；仅记录零结果搜索、版本冲突、密钥拦截、编辑找不到/不唯一、相似拦截和成功强制新建；不统计正常搜索、阅读或其他成功写入。计数为空会提示“这段时间没有发生这些事件”。事件中只保留脱敏查询及哈希页面标识，不记录正文、写入理由或凭据值。
 
 **SECRET_DETECTED**：正文或页头命中密钥规则，不会写入。确需保存低风险凭据时用 `memwiki_secret_set`，页面写 `secret:<名字>` 引用。
 

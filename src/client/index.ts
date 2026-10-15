@@ -1,12 +1,9 @@
 import type { Context } from '@deepseek-ai/cordis'
-import type { MemwikiClientContext } from './compat.ts'
+import type { MemwikiClientContext } from './context.ts'
 import { MemwikiApi } from './api.ts'
 import { MemwikiSettingsCard, type MemwikiSettingsFace } from './MemwikiSettingsCard.tsx'
 import { zh } from './locales.ts'
-// Desktop 0.2 compatibility (dsh-trilium): settings.section only; no
-// settings.plugin.item, dsh-client-runtime or settingsScope dependency.
-// Section ID must differ from the host/plugin namespace. Mount failures must
-// never bring down the GUI.
+// Register the desktop settings section; mounting failures must not bring down the GUI.
 export const inject = ['slots', 'locale']
 export function apply(context: Context): void {
   const ctx = context as MemwikiClientContext

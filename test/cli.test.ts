@@ -115,4 +115,15 @@ test('CLI merge/verify/feedback/usage operate on an isolated vault', async t => 
   const usage = JSON.parse((await run(['usage', '--days', '7', ...common])).stdout)
   assert.equal(usage.counts.SEARCH_ZERO, 1)
   assert.equal(usage.zeroQueries[0].query, 'zzzz-not-present')
+  assert.match(usage.scope, /仅记录零结果搜索/)
+  assert.ok(!usage.message.includes('没有发生'))
+})
+
+test('CLI usage explicitly reports no events in an empty vault', async t => {
+  const dir = await temporary(t)
+  await initVault(dir, { git: false })
+  const summary = JSON.parse((await run(['usage', '--dir', dir, '--no-git'])).stdout)
+  assert.deepEqual(summary.counts, {})
+  assert.match(summary.message, /这段时间没有发生这些事件/)
+  assert.match(summary.scope, /不统计正常搜索、阅读或其他成功写入/)
 })

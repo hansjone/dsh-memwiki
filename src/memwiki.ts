@@ -7,7 +7,7 @@ import type {
 } from './types.ts'
 import { MemwikiError } from './types.ts'
 import { Store } from './core/store.ts'
-import { createResolver, extractLinks } from './core/links.ts'
+import { createResolver, extractLinks, convertMarkdownLinks } from './core/links.ts'
 import { appendLog, readLog } from './core/log.ts'
 import { commit, hasRemote, listUncommitted, pullRebase, push } from './core/git.ts'
 import { scanSecrets } from './core/secrets.ts'
@@ -78,7 +78,7 @@ export class Memwiki {
   }
 
   private constructor(config: MemwikiConfig) {
-    this.config = { ...config, dir: path.resolve(config.dir), git: { autoCommit: config.git.autoCommit, autoPush: config.git.autoPush ?? false } }
+    this.config = { ...config, dir: path.resolve(config.dir), git: { ...config.git } }
     this.store = new Store(this.config)
   }
 
@@ -116,7 +116,7 @@ export class Memwiki {
       body: page.body,
       bytes: page.bytes,
       mtimeMs: page.mtimeMs,
-      metaError: page.metaError,
+      metaIssues: page.metaIssues,
       links: [...new Set(links)],
       brokenLinks: [...new Set(brokenLinks)],
     }
@@ -343,7 +343,7 @@ export class Memwiki {
   /** Consolidates source pages into an owner with one catalog/log/git mutation. */
   async merge(op: MergeOp): Promise<MutationResult<MergeResult>> {
     const result = await this.observed(op.ctx.agent, op.into, () => this.store.merge(op))
-    const commitSha = await this.afterMutation({ changedPaths: result.changedPaths, pages: result.pages,
+    const commitSha = await this.afterMutation({ changedPaths: result.changedPaths, pages: result.pages, removedIds: result.from,
       action: 'merge', page: `${result.from.join(', ')} -> ${result.page.id}`, reason: op.ctx.reason, agent: op.ctx.agent })
     return { result, commitSha }
   }
@@ -513,10 +513,13 @@ export class Memwiki {
       const record = this.records.get(this.key(issue.page))
       if (!record) continue
       const patch = fixFor(issue, record)
-      if (!patch) continue
+      if (!patch && issue.code !== 'markdown_link') continue
       try {
         const page = await this.store.get(issue.page)
-        const written = await this.observed(agent, page.id, () => this.store.write({ kind: 'meta', id: page.id, rev: page.rev, meta: patch }, { agent, reason: 'lint 自动修复' }))
+        const op: WriteOp = issue.code === 'markdown_link'
+          ? { kind: 'replace', id: page.id, rev: page.rev, body: convertMarkdownLinks(page.body, page.id) }
+          : { kind: 'meta', id: page.id, rev: page.rev, meta: patch! }
+        const written = await this.observed(agent, page.id, () => this.store.write(op, { agent, reason: 'lint 自动修复' }))
         pages.push(written.page)
         for (const p of written.changedPaths) changedPaths.add(p)
         fixed++

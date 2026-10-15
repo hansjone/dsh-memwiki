@@ -3,7 +3,7 @@ import { parse, stringify } from 'yaml'
 import { PAGE_TYPES, PAGE_STATUSES } from '../types.ts'
 import type { PageMeta, MetaPatch, PageType, MetaIssue } from '../types.ts'
 
-const ORDER = ['title', 'summary', 'type', 'tags', 'aliases', 'status', 'created', 'updated', 'updated_by', 'verified', 'sources', 'superseded_by', 'project', 'pinned']
+const ORDER = ['title', 'summary', 'type', 'tags', 'aliases', 'status', 'created', 'updated', 'updated_by', 'verified', 'sources', 'project', 'pinned']
 const stringArray = (v: unknown) => Array.isArray(v) && v.every(x => typeof x === 'string')
 const date = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v)) && new Date(v).toISOString().slice(0, 10) === v
 const datetime = (v: unknown) => typeof v === 'string' && date(v.slice(0, 10)) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(v) && !Number.isNaN(Date.parse(v))
@@ -13,7 +13,7 @@ const valid: Record<string, (v: unknown) => boolean> = {
   type: v => PAGE_TYPES.includes(v as PageType), status: v => PAGE_STATUSES.includes(v as PageMeta['status']),
   tags: stringArray, aliases: stringArray, sources: stringArray,
   created: date, updated: datetime, updated_by: v => typeof v === 'string' && !!v.trim(),
-  verified: date, superseded_by: v => typeof v === 'string' && !!v.trim(),
+  verified: date,
   project: v => typeof v === 'string', pinned: v => typeof v === 'boolean',
 }
 const required = ['title', 'summary', 'type', 'status', 'created', 'updated', 'updated_by']
@@ -68,19 +68,19 @@ export function applyMetaPatch(meta: PageMeta, patch: MetaPatch): PageMeta {
   return next
 }
 
-/** Parses YAML frontmatter; malformed or invalid metadata yields readable defaults and metaError. */
-export function parsePage(raw: string): { meta: PageMeta; body: string; metaError?: string; metaIssues?: MetaIssue[] } {
+/** Parses YAML frontmatter; malformed or invalid metadata yields readable defaults and structured issues. */
+export function parsePage(raw: string): { meta: PageMeta; body: string; metaIssues?: MetaIssue[] } {
   const match = /^(?:\uFEFF)?---[ \t]*\r?\n([\s\S]*?)^---[ \t]*(?:\r?\n|$)/m.exec(raw)
   const hasOpening = /^(?:\uFEFF)?---[ \t]*(?:\r?\n|$)/.test(raw)
   const body = match && match.index === 0 ? raw.slice(match[0].length) : raw
   const fallback = defaultMeta(body.match(/^#{1,6}\s+(.+)$/m)?.[1] ?? 'Untitled')
-  if (!match || match.index !== 0) return { meta: fallback, body, metaError: hasOpening ? '页头未闭合' : '缺少页头' }
+  if (!match || match.index !== 0) return { meta: fallback, body, metaIssues: [{ field: 'meta', reason: hasOpening ? '页头未闭合' : '缺少页头' }] }
   let input: Record<string, unknown>
   try {
     const value: unknown = parse(match[1])
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error()
     input = value as Record<string, unknown>
-  } catch { return { meta: fallback, body, metaError: '页头 YAML 无法解析' } }
+  } catch { return { meta: fallback, body, metaIssues: [{ field: 'meta', reason: '页头 YAML 无法解析' }] } }
   const errors: MetaIssue[] = required.filter(k => !(k in input)).map(field => ({ field, reason: '缺少必填字段' }))
   const meta = { ...fallback, ...input }
   for (const [key, check] of Object.entries(valid)) {
@@ -90,12 +90,7 @@ export function parsePage(raw: string): { meta: PageMeta; body: string; metaErro
       else delete meta[key]
     }
   }
-  if (meta.status === 'superseded' && !meta.superseded_by && !errors.some(e => e.field === 'superseded_by')) {
-    errors.push({ field: 'superseded_by', reason: 'status 为 superseded 时必填' })
-  }
-  return { meta: meta as PageMeta, body, ...(errors.length ? {
-    metaError: errors.map(e => `${e.field} ${e.reason}`).join('；'), metaIssues: errors,
-  } : {}) }
+  return { meta: meta as PageMeta, body, ...(errors.length ? { metaIssues: errors } : {}) }
 }
 
 /** Serializes metadata in the canonical field order, then unknown keys in original order. */

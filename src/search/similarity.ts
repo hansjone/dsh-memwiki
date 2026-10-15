@@ -23,9 +23,9 @@ export function prose(body: string): string {
   for (const link of extractLinks(body).reverse()) result = result.slice(0, link.start) + result.slice(link.end)
   return result.replace(/!?\[[^\]\n]*\]\([^\n)]*\)/gu, '').replace(/^\s*#{1,6}[^\n]*$/gmu, '')
 }
-/** Formal knowledge pages eligible for duplicate detection (not inbox/meta/stubs/special files). */
+/** Formal knowledge pages eligible for duplicate detection (excluding inbox/meta/special files). */
 export function contentEligible(page: Document): boolean {
-  return !isSpecialId(page.id) && page.meta.status !== 'superseded' && page.meta.type !== 'inbox'
+  return !isSpecialId(page.id) && page.meta.type !== 'inbox'
     && page.meta.type !== 'meta' && !/^(?:inbox|meta)\//iu.test(page.id)
 }
 /** Five-character prose overlap; short or reference-only content scores zero. */

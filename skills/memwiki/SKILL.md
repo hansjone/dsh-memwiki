@@ -12,7 +12,7 @@ description: 使用共享记忆 wiki（dsh-memwiki）跨会话、跨 AI 记住�
 
 1. 任务开始 `memwiki_context`（已注入可跳过）；相关时先搜索再读全文，旧内容先核实。
 2. 写前先搜；一个事实一个归属，纠正优先于补充，直接改旧页，只写当前正确说法。无归属才新建，拿不准用 remember。
-3. 带 reason/source；更新带 rev，CONFLICT 重读。相似拦截先看候选；核实后 verify；重复页用 merge。
+3. 带 reason/source；更新带 rev，CONFLICT 重读。相似拦截先看候选；核实后 verify；重复页用 merge（直接删除源文件，标题/别名并入目标，双链改写）；先 lint fix 将相对 Markdown 页面链接转为双链。
 4. 页面不写凭据值，只留 `secret:<名字>`；不记临时状态或看代码/git 就知道的信息，不复制内容到新页。
 5. 整理用 memwiki-curate；工具问题、规则不清或有价值的搜索缺口用 memwiki_feedback。禁止改写 git 历史。
 

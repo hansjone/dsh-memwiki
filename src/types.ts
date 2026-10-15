@@ -7,10 +7,10 @@
 export type PageType = 'user' | 'rule' | 'project' | 'topic' | 'howto' | 'decision' | 'reference' | 'inbox' | 'meta'
 
 /** Page lifecycle status (§3.2). */
-export type PageStatus = 'active' | 'draft' | 'stale' | 'superseded'
+export type PageStatus = 'active' | 'stale'
 
 export const PAGE_TYPES: readonly PageType[] = ['user', 'rule', 'project', 'topic', 'howto', 'decision', 'reference', 'inbox', 'meta']
-export const PAGE_STATUSES: readonly PageStatus[] = ['active', 'draft', 'stale', 'superseded']
+export const PAGE_STATUSES: readonly PageStatus[] = ['active', 'stale']
 
 /** Parsed frontmatter (§3.2). Unknown keys are preserved verbatim. */
 export interface PageMeta {
@@ -27,7 +27,6 @@ export interface PageMeta {
   updated_by: string
   verified?: string
   sources?: string[]
-  superseded_by?: string
   project?: string
   pinned?: boolean
   [extra: string]: unknown
@@ -51,9 +50,7 @@ export interface Page {
   mtimeMs: number
   /** Raw file size in bytes. */
   bytes: number
-  /** Present when the frontmatter failed to parse or failed validation; `meta` then holds best-effort defaults. */
-  metaError?: string
-  /** Field-level validation reasons; rejected values are never included. */
+  /** Parse/validation failures; `meta` holds readable defaults and rejected values are never included. */
   metaIssues?: MetaIssue[]
 }
 
@@ -81,7 +78,7 @@ export interface PageRecord {
   body: string
   bytes: number
   mtimeMs: number
-  metaError?: string
+  metaIssues?: MetaIssue[]
   /** Resolved outgoing link targets (page IDs, deduplicated). */
   links: string[]
   /** Raw targets that did not resolve. */
@@ -207,8 +204,7 @@ export interface MemwikiConfig {
   /** Absolute vault root. */
   dir: string
   agent: string
-  /** `autoPush` is optional for backward compatibility; absent means off (§4.4). */
-  git: { autoCommit: boolean; autoPush?: boolean }
+  git: { autoCommit: boolean; autoPush: boolean }
   contextBudget: number
   staleDays: number
   secretScan: boolean
@@ -235,7 +231,6 @@ export interface SearchQuery {
   /** Filters to pages whose ID starts with this prefix. */
   dir?: string
   limit?: number
-  includeSuperseded?: boolean
 }
 
 export interface SearchHit {
@@ -277,7 +272,7 @@ export type LintCode =
   | 'missing_summary'
   | 'invalid_meta'
   | 'stale_candidate'
-  | 'superseded_target_missing'
+  | 'markdown_link'
   | 'oversized'
   | 'inbox_backlog'
   | 'secret_suspect'

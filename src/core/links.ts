@@ -1,4 +1,6 @@
 import type { WikiLink } from '../types.ts'
+import path from 'node:path'
+import { normalizeId } from './ids.ts'
 
 const LINK_RE = /\[\[([^\[\]\n]+?)\]\]/g
 
@@ -70,6 +72,45 @@ export function extractLinks(body: string): WikiLink[] {
 /** Serializes a link back to `[[...]]` text. */
 export function formatLink(target: string, heading?: string, label?: string): string {
   return '[[' + target + (heading ? '#' + heading : '') + (label ? '|' + label : '') + ']]'
+}
+
+/** A relative Markdown page link; replacement is absent when it cannot safely become a wikilink. */
+export interface MarkdownPageLink { start: number; end: number; replacement?: string }
+
+/** Finds inline relative `.md` links outside code, excluding images and external URLs. */
+export function markdownPageLinks(body: string, pageId: string): MarkdownPageLink[] {
+  const skip = codeRanges(body)
+  const out: MarkdownPageLink[] = []
+  const pattern = /(?<!!)\[([^\]\n]*)\]\(\s*(?:<([^>\n]+)>|((?:\\.|[^\s\\()]|\([^()\n]*\))+))(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^\)\n]*\)))?\s*\)/g
+  for (const m of body.matchAll(pattern)) {
+    const start = m.index, end = start + m[0].length
+    if (skip.some(([s, e]) => start < e && end > s) || /(?:^|[^\\])(?:\\\\)*\\$/.test(body.slice(0, start))) continue
+    const href = (m[2] ?? m[3]).replace(/\\([() ])/g, '$1')
+    if (/^(?:[a-z][a-z\d+.-]*:|[/\\#])/i.test(href)) continue
+    const hash = href.indexOf('#')
+    const file = hash < 0 ? href : href.slice(0, hash)
+    if (!/\.md$/i.test(file)) continue
+    let replacement: string | undefined
+    try {
+      const target = normalizeId(path.posix.join(path.posix.dirname(pageId), decodeURIComponent(file).slice(0, -3)))
+      const heading = hash < 0 ? undefined : decodeURIComponent(href.slice(hash + 1))
+      const label = m[1]
+      if (!/[\[\]#|\r\n]/.test(target) && !/[\[\]|\r\n]/.test((heading ?? '') + label)) {
+        replacement = formatLink(target, heading, label)
+      }
+    } catch { /* malformed escapes, invalid IDs or paths outside the vault require manual correction */ }
+    out.push({ start, end, replacement })
+  }
+  return out
+}
+
+/** Converts safe relative Markdown page links into vault-relative wikilinks, preserving surrounding text. */
+export function convertMarkdownLinks(body: string, pageId: string): string {
+  let result = body
+  for (const link of markdownPageLinks(body, pageId).reverse()) {
+    if (link.replacement !== undefined) result = result.slice(0, link.start) + link.replacement + result.slice(link.end)
+  }
+  return result
 }
 
 /** Resolves ID, title, alias, then basename, case-insensitively; reports candidates at the first matching tier. */

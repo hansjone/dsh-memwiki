@@ -12,7 +12,7 @@ function render(entry: LogEntry): string {
   return visible + ' <!-- memwiki:' + Buffer.from(JSON.stringify(entry)).toString('base64') + ' -->'
 }
 
-/** Reads newest entries, preserving ISO timestamps; accepts plain human-readable log lines as well. */
+/** Reads the structured entries emitted by appendLog, preserving complete ISO timestamps. */
 export async function readLog(vaultDir: string, limit: number): Promise<LogEntry[]> {
   if (limit <= 0) return []
   let raw: string
@@ -25,10 +25,8 @@ export async function readLog(vaultDir: string, limit: number): Promise<LogEntry
       try {
         const entry = JSON.parse(Buffer.from(encoded[1], 'base64').toString('utf8')) as LogEntry
         if (['at', 'agent', 'action', 'reason'].every(k => typeof entry[k as keyof LogEntry] === 'string')) { entries.push(entry); continue }
-      } catch { /* Fall back to the visible line. */ }
+      } catch { /* Ignore corrupt structured entries. */ }
     }
-    const m = /^- (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) \[([^\]]+)\] (.*?)(?: \[\[([^\]]+)\]\])?：(.*?)(?: <!--.*)?$/.exec(line)
-    if (m) entries.push({ at: `${m[1]}T${m[2]}:00Z`, agent: m[3], action: m[4], ...(m[5] ? { page: m[5] } : {}), reason: m[6] })
   }
   return entries.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, limit)
 }

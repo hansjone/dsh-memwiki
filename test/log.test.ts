@@ -26,12 +26,11 @@ test('log groups months and entries newest first and round-trips full entries', 
   assert.deepEqual(await readLog(dir, 1), [sameTime])
 })
 
-test('concurrent append loses no entries, and plain existing log lines remain readable', async t => {
+test('concurrent append loses no entries; lines without valid structured data are ignored', async t => {
   const dir = await temporary(t)
-  await writeFile(path.join(dir, 'log.md'), '# 变更日志\n\n## 2026-09\n\n- 2026-09-01 10:00 [human] lint：检查\n')
+  await writeFile(path.join(dir, 'log.md'), '# 变更日志\n\n## 2026-09\n\n- 2026-09-01 10:00 [human] lint：检查\n- 2026-09-01 10:00 [human] lint：损坏 <!-- memwiki:eA== -->\n')
   await Promise.all(Array.from({ length: 5 }, (_, i) => appendLog(dir, { at: `2026-10-14T20:3${i}:00Z`, agent: 'test', action: '更新', reason: String(i) })))
   const log = await readLog(dir, 10)
-  assert.equal(log.length, 6)
-  assert.equal(log.at(-1)?.action, 'lint')
-  assert.equal(log.at(-1)?.reason, '检查')
+  assert.equal(log.length, 5)
+  assert.deepEqual(log.map(entry => entry.reason), ['4', '3', '2', '1', '0'])
 })

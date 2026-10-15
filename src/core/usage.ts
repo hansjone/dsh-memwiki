@@ -66,6 +66,7 @@ export async function usageSummary(dir: string, days = 7, now = new Date()) {
       }
     }
   })
-  return { days, counts, zeroQueries: [...queries].map(([query, count]) => ({ query, count }))
+  const scope = '仅记录零结果搜索（SEARCH_ZERO）、版本冲突（CONFLICT）、密钥拦截（SECRET_DETECTED）、编辑找不到或不唯一（EDIT_NOT_FOUND / AMBIGUOUS_EDIT）、相似拦截（SIMILAR_EXISTS）及成功强制新建（FORCE_CREATE）；不统计正常搜索、阅读或其他成功写入。'
+  return { days, scope, message: Object.keys(counts).length ? '以下为这段时间记录的事件次数。' : '这段时间没有发生这些事件。', counts, zeroQueries: [...queries].map(([query, count]) => ({ query, count }))
     .sort((a, b) => b.count - a.count || a.query.localeCompare(b.query)).slice(0, 10) }
 }

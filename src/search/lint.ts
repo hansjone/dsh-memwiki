@@ -3,6 +3,7 @@ import type { LintIssue, LintOptions, MetaPatch, PageRecord, PageType } from '..
 import { contentEligible, contentFingerprint, jaccard, OVERLAP_THRESHOLD } from './similarity.ts'
 import { factTokens } from './facts.ts'
 import { feedbackEntries } from '../core/feedback.ts'
+import { markdownPageLinks } from '../core/links.ts'
 
 const DAY = 86_400_000
 const text = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0
@@ -27,7 +28,6 @@ function invalidFields(record: PageRecord): string[] {
   if (m.verified !== undefined && !date(m.verified)) fields.push('verified')
   if (m.project !== undefined && !text(m.project)) fields.push('project')
   if (m.pinned !== undefined && typeof m.pinned !== 'boolean') fields.push('pinned')
-  if ((m.status === 'superseded' || m.superseded_by !== undefined) && !text(m.superseded_by)) fields.push('superseded_by')
   return fields
 }
 
@@ -49,7 +49,6 @@ export function fixFor(issue: LintIssue, record: PageRecord): MetaPatch | undefi
 /** Checks parsed records without I/O; secrets are scanned only through the injected scanner. */
 export function lintRecords(records: PageRecord[], opts: LintOptions): LintIssue[] {
   const issues: LintIssue[] = []
-  const ids = new Set(records.map(r => r.id.toLowerCase()))
   const incoming = new Set<string>()
   const names = new Map<string, Set<string>>()
   const secretPages = new Set<string>()
@@ -66,20 +65,21 @@ export function lintRecords(records: PageRecord[], opts: LintOptions): LintIssue
   for (const r of records) {
     const m = r.meta
     for (const target of new Set(r.brokenLinks)) add('broken_link', r.id, `无法解析链接：${target}`)
-    if (!incoming.has(r.id.toLowerCase()) && !/^(?:user|rules|inbox)\//iu.test(r.id) && !m.pinned) add('orphan', r.id, '没有其他页面链接到此页')
+    if (!incoming.has(r.id.toLowerCase()) && !/^(?:user|rules|inbox|meta)\//iu.test(r.id) && !m.pinned) add('orphan', r.id, '没有其他页面链接到此页')
+    const markdown = markdownPageLinks(r.body, r.id)
+    if (markdown.length) add('markdown_link', r.id, '页面链接请使用 [[双链]]；相对 Markdown 链接不参与链接解析，无法转换的路径或文字需手动修正', markdown.some(link => link.replacement !== undefined))
     if (!text(m.summary)) add('missing_summary', r.id, '缺少独立可读的摘要')
     const fields = invalidFields(r)
-    if (r.metaError !== undefined || fields.length) {
+    if (r.metaIssues?.length || fields.length) {
       // Do not echo parser errors: they may contain raw frontmatter secrets.
       const issue: LintIssue = { code: 'invalid_meta', page: r.id, message: fields.length ? `页头字段缺失或非法：${fields.join('、')}` : '页头解析失败', fixable: false }
       issue.fixable = fixFor(issue, r) !== undefined
       issues.push(issue)
     }
     const checked = m.verified ?? m.updated
-    if (!['stale', 'superseded'].includes(m.status) && opts.now.getTime() - Date.parse(checked) > opts.staleDays * DAY) {
+    if (m.status !== 'stale' && opts.now.getTime() - Date.parse(checked) > opts.staleDays * DAY) {
       add('stale_candidate', r.id, `超过 ${opts.staleDays} 天未确认`, true)
     }
-    if (text(m.superseded_by) && !ids.has(m.superseded_by.toLowerCase())) add('superseded_target_missing', r.id, `替代页面不存在：${m.superseded_by}`)
     if (Buffer.byteLength(r.body, 'utf8') > 20 * 1024) add('oversized', r.id, '正文超过 20 KB，建议拆分')
     if (opts.scanSecrets) {
       const scanText = Object.entries(m).map(([name, value]) => `${name}: ${typeof value === 'string' ? value : JSON.stringify(value)}`).join('\n') + '\n---\n' + r.body

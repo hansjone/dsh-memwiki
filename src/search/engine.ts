@@ -133,15 +133,14 @@ export function createSearchEngine(): SearchEngine {
       const ranked: { doc: Indexed; score: number }[] = []
       for (const [id, initial] of scores) {
         const doc = docs.get(id)!, { meta } = doc.record
-        if ((!q.includeSuperseded && meta.status === 'superseded') || (q.type && q.type !== meta.type)
+        if ((q.type && q.type !== meta.type)
           || (q.tags && !q.tags.every(tag => meta.tags.includes(tag))) || (q.dir && !id.startsWith(key(q.dir)))) continue
         let score = initial
         if (doc.phrases.slice(0, -1).some(text => text.includes(phrase))) score *= 2
         if (doc.phrases.at(-1)!.includes(phrase)) score *= 1.3
         const project = meta.project ?? (id.startsWith('projects/') ? doc.record.id.split('/')[1] : undefined)
         if (q.project && project === q.project) score *= 1.3
-        if (meta.status === 'stale' || meta.status === 'superseded') score *= 0.4
-        if (meta.status === 'draft') score *= 0.8
+        if (meta.status === 'stale') score *= 0.4
         ranked.push({ doc, score })
       }
       ranked.sort((a, b) => b.score - a.score

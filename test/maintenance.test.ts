@@ -23,7 +23,7 @@ const prose = '家庭网络主网关 MikroTik 使用 RouterOS 7.12.1，管理地
 async function fixture(t: Parameters<typeof temporary>[0], git = false) {
   const dir = await temporary(t)
   await initVault(dir, { git })
-  const wiki = await Memwiki.open({ ...config(dir), git: { autoCommit: git } })
+  const wiki = await Memwiki.open({ ...config(dir), git: { autoCommit: git, autoPush: false } })
   t.after(() => wiki.close())
   const create = (id: string, title: string, body = prose, extra = {}) => wiki.write({ kind: 'create', id,
     meta: { title, summary: `${title}说明`, ...extra }, body, force: true }, ctx)
@@ -39,7 +39,7 @@ test('similarity is bounded, explainable and ignores reference-only/short prose'
   assert.equal(contentSimilarity('见 [[10.0.0.1|网关]]', '见 [[10.0.0.1|网关]]'), 0)
   assert.equal(contentSimilarity('[说明](https://host/10.0.0.1)', '[说明](https://host/10.0.0.1)'), 0)
   assert.equal(contentSimilarity('很短的内容', '很短的内容'), 0)
-  assert.deepEqual(similarPages(a, [b, { ...b, id: 'inbox/x' }, { ...b, id: '_guide' }, { ...b, id: 'topics/old', meta: { ...b.meta, status: 'superseded' } }]).map(h => h.id), ['topics/b'])
+  assert.deepEqual(similarPages(a, [b, { ...b, id: 'inbox/x' }, { ...b, id: '_guide' }, { ...b, id: 'meta/feedback/2026-10' }]).map(h => h.id), ['topics/b'])
 })
 
 test('create blocks similar content, returns three candidates, permits different topics and justified force', async t => {
@@ -96,7 +96,7 @@ test('vault thresholds are loaded, validated and actually change create/lint beh
   assert.ok(!lintRecords([a, b], { staleDays: 90, now: new Date(), inboxEntries: [], overlapThreshold: 1 }).some(i => i.code === 'overlap'))
 })
 
-test('merge rewrites links/suffixes, transfers names, retains stubs and makes one commit/log', async t => {
+test('merge rewrites links/suffixes, transfers names, deletes sources and makes one commit/log', async t => {
   const { dir, wiki, create } = await fixture(t, true)
   const { result: target } = await create('topics/owner', '归属页', '保留正文\n', { aliases: ['已有别名'], custom: true })
   await create('topics/a', '旧标题', '旧内容\n', { aliases: ['OldAlias'] })
@@ -116,10 +116,17 @@ test('merge rewrites links/suffixes, transfers names, retains stubs and makes on
     assert.ok(result.page.meta.aliases.includes(name))
     assert.equal((await wiki.read(name)).page.id, 'topics/owner')
   }
-  const stub = (await wiki.read('topics/a')).page
-  assert.equal(stub.meta.status, 'superseded')
-  assert.equal(stub.meta.superseded_by, result.page.id)
-  assert.equal(stub.body, '已合并到 [[topics/owner]]\n')
+  for (const id of ['topics/a', 'topics/b']) {
+    await assert.rejects(wiki.read(id), code('NOT_FOUND'))
+    await assert.rejects(stat(path.join(dir, id + '.md')), { code: 'ENOENT' })
+    assert.ok(result.changedPaths.includes(id + '.md'))
+    assert.ok(!result.pages.some(p => p.id === id))
+    assert.ok(!wiki.search({ query: '旧内容' }).some(hit => hit.id === id))
+    assert.ok(!wiki.context().includes('[[' + id + ']]'))
+  }
+  assert.ok(!(await readFile(path.join(dir, 'index.md'), 'utf8')).includes('[[topics/a|'))
+  assert.ok(!(await readdir(path.join(dir, '.trash'))).length)
+  assert.deepEqual((await wiki.read('topics/owner')).backlinks, ['howto/links'])
   assert.equal((await wiki.read('howto/links')).page.body, '[[topics/owner#章节|显示]] [[topics/owner]] [[topics/owner|A]] [[topics/owner]] `[[B]]`\n```\n[[topics/a]]\n```\n')
   assert.equal((await exec('git', ['status', '--porcelain'], { cwd: dir })).stdout, '')
   const tracked = (await exec('git', ['ls-files', '.memwiki'], { cwd: dir })).stdout
@@ -163,9 +170,9 @@ test('fact token rules handle addresses, dotted versions, paths and ports with n
   assert.deepEqual([...factTokens('localhost:5173 git.avelo.top:2222')].sort(), [':2222', ':5173'])
 })
 
-test('content lint excludes special/inbox/superseded pages, aggregates facts and never auto-fixes', () => {
+test('content lint excludes special/inbox/meta pages, aggregates facts and never auto-fixes', () => {
   const records = ['topics/a', 'topics/b', 'topics/c'].map(id => record(id, {}, prose))
-  const ignored = [record('_guide', {}, prose), record('inbox/a', { type: 'inbox' }, prose), record('topics/old', { status: 'superseded', superseded_by: 'topics/a' }, prose)]
+  const ignored = [record('_guide', {}, prose), record('inbox/a', { type: 'inbox' }, prose), record('meta/feedback/2026-10', { type: 'meta' }, prose)]
   const opts = { staleDays: 90, now: new Date(), inboxEntries: [] }
   const issues = lintRecords([...records, ...ignored], opts)
   const overlaps = issues.filter(i => i.code === 'overlap')
@@ -208,6 +215,7 @@ test('feedback appends unique monthly entries concurrently, summarizes context/l
   assert.equal(wiki.feedbackList()[0].page, `meta/feedback/${localDate().slice(0, 7)}`)
   assert.match(wiki.context(), /有 3 条反馈待处理/)
   assert.ok(!wiki.context().includes('[[meta/feedback/'))
+  assert.ok(!(await wiki.lint()).issues.some(i => i.code === 'orphan' && i.page?.startsWith('meta/')))
   const issue = (await wiki.lint()).issues.find(i => i.code === 'feedback_open')!
   assert.match(issue.message, /3 条/)
   assert.equal(issue.fixable, false)
@@ -261,4 +269,55 @@ test('usage rotates at 1 MB, retains one generation, applies date filter and lim
   await writeFile(file + '.1', JSON.stringify({ at: '2000-01-01T00:00:00Z', agent: 'test', event: 'CONFLICT' }) + '\n')
   assert.equal((await usageSummary(dir)).counts.CONFLICT, undefined)
   assert.deepEqual((await readdir(path.join(dir, '.memwiki'))).filter(n => n.startsWith('usage')).sort(), ['usage.jsonl', 'usage.jsonl.1'])
+})
+
+test('usage describes its limited event scope and explicitly reports an empty time window', async t => {
+  const { wiki, create, dir } = await fixture(t)
+  const empty = await wiki.usage()
+  assert.deepEqual(empty.counts, {})
+  assert.deepEqual(empty.zeroQueries, [])
+  assert.match(empty.message, /这段时间没有发生这些事件/)
+  for (const event of ['SEARCH_ZERO', 'CONFLICT', 'SECRET_DETECTED', 'EDIT_NOT_FOUND', 'AMBIGUOUS_EDIT', 'SIMILAR_EXISTS', 'FORCE_CREATE']) assert.ok(empty.scope.includes(event))
+  assert.match(empty.scope, /不统计正常搜索、阅读或其他成功写入/)
+  await wiki.write({ kind: 'create', id: 'topics/normal', meta: { title: '正常', summary: '正常操作' }, body: 'keyword' }, ctx)
+  wiki.search({ query: 'keyword' })
+  await wiki.read('topics/normal')
+  assert.deepEqual((await wiki.usage()).counts, {})
+  await create('topics/forced', '强制')
+  assert.equal((await wiki.usage()).counts.FORCE_CREATE, 1)
+  assert.ok(!(await wiki.usage()).message.includes('没有发生'))
+  assert.match((await usageSummary(dir, 7, new Date('2100-01-01'))).message, /这段时间没有发生这些事件/)
+})
+
+test('lint converts Markdown page links, then backlinks, broken links, move and merge use wikilinks', async t => {
+  const { dir, wiki, create } = await fixture(t, true)
+  await create('topics/source', '源页', '来源正文')
+  await create('topics/owner', '归属', '归属正文')
+  const body = '[显示](../topics/source.md#章节) [断链](../topics/missing.md) `[示例](../topics/source.md)`\n'
+  await create('howto/links', '操作页', body)
+  assert.deepEqual((await wiki.read('topics/source')).backlinks, [])
+  const issues = (await wiki.lint()).issues.filter(i => i.code === 'markdown_link')
+  assert.equal(issues.length, 1)
+  assert.equal(issues[0].page, 'howto/links')
+  assert.equal(issues[0].fixable, true)
+  assert.equal((await wiki.read('howto/links')).page.body, body)
+  const beforeLog = (await wiki.log(100)).length
+  const result = await wiki.lint({ fix: true })
+  assert.equal(result.fixed, 1)
+  assert.ok(result.commitSha)
+  assert.equal((await wiki.log(100)).length, beforeLog + 1)
+  assert.ok(!result.issues.some(i => i.code === 'markdown_link'))
+  assert.ok(result.issues.some(i => i.code === 'broken_link' && i.page === 'howto/links'))
+  assert.equal((await wiki.read('howto/links')).page.body, '[[topics/source#章节|显示]] [[topics/missing|断链]] `[示例](../topics/source.md)`\n')
+  assert.deepEqual((await wiki.read('topics/source')).backlinks, ['howto/links'])
+  assert.deepEqual((await wiki.read('howto/links')).brokenLinks, ['topics/missing'])
+  assert.ok(wiki.search({ query: '显示' }).some(hit => hit.id === 'howto/links'))
+  await wiki.move('topics/source', 'topics/moved', ctx)
+  assert.match((await wiki.read('howto/links')).page.body, /\[\[topics\/moved#章节\|显示\]\]/)
+  const owner = (await wiki.read('topics/owner')).page
+  await wiki.merge({ from: ['topics/moved'], into: owner.id, rev: owner.rev, ctx })
+  assert.deepEqual((await wiki.read(owner.id)).backlinks, ['howto/links'])
+  assert.match((await wiki.read('howto/links')).page.body, /\[\[topics\/owner#章节\|显示\]\]/)
+  assert.equal((await wiki.lint({ fix: true })).fixed, 0)
+  assert.equal((await exec('git', ['status', '--porcelain'], { cwd: dir })).stdout, '')
 })

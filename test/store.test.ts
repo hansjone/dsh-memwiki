@@ -206,6 +206,7 @@ test('delete/restore round-trip, report backlinks and reject occupied IDs and fo
   await assert.rejects(readFile(path.join(dir, deleted.trashPath)), { code: 'ENOENT' })
   await assert.rejects(store.restore('../outside.123.md', ctx), code('OUT_OF_VAULT'))
   await assert.rejects(store.restore('topics/ref.md', ctx), code('INVALID_ID'))
+  await assert.rejects(store.restore('.trash/topics/ref.123-deadbeef.md', ctx), code('INVALID_ID'))
   await assert.rejects(store.restore('.trash/topics/missing.123.md', ctx), code('NOT_FOUND'))
 })
 
@@ -236,7 +237,7 @@ test('list excludes special/internal files, resolve honors tiers, cache refreshe
   assert.equal((await store.resolve('External')).id, 'topics/A')
   await writeFile(page.path, '---\ntitle: [\n---\nstill readable')
   const broken = await store.get('topics/A')
-  assert.ok(broken.metaError)
+  assert.ok(broken.metaIssues)
   assert.equal(broken.body, 'still readable')
 })
 
