@@ -85,6 +85,8 @@ project: myapp
 
 未知字段原样保留（用户/Obsidian 插件可能加自己的字段）。解析失败的页头不报错崩溃：页面仍可读，`lint` 报 `invalid_meta`。
 
+页头校验失败时，`metaError` 包含字段名和原因，`metaIssues` 提供 `{ field, reason }` 数组；写入拒绝时以 `INVALID_META` 返回相同消息和 `details.errors`。summary 按 Unicode 字符计数，超过 120 字直接拒绝并报告当前长度，不截断。
+
 ### 3.3 版本号（rev）
 
 `rev` = 文件原始字节的 SHA-256 前 12 位十六进制。`read` 返回 rev；普通写入除 `create` 和 `append` 外必须带 rev，不一致返回 `CONFLICT`（附当前 rev），调用方重新读取后再改。merge 校验目标 rev；verify 只改核实字段、内部加锁而无需 rev；feedback 的追加/解决在内部取锁并读取当前版本。
@@ -110,6 +112,8 @@ project: myapp
 | `meta` | 是 | 只改页头字段（合并，`null` 表示删除该字段） |
 
 每次写入都带 `WriteContext { agent, reason, source? }`：`agent` 写进 `updated_by`，`reason` 进 `log.md` 和 git 提交信息，`source` 追加进 `sources`（去重）。
+
+所有模式均可合并 meta patch；append 修改页头时必须带 rev，纯正文追加仍无需 rev。section 的 body 开头若有与目标同名的 Markdown 标题行，先移除该行，保留页面原有标题。
 
 #### 新建相似页拦截（0.2.0）
 
@@ -268,6 +272,7 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 | `memwiki_log` | 最近的变更，参数 `limit?` |
 
 - 服务端 `instructions`（DSH 会注入系统提示）仅保留核心摘要，不超过 1.5 KB；细则见 `_guide`，工具不好用时用 memwiki_feedback 记下。memwiki_write 新增可选 force（仅 create 使用），reason 必填。
+- `memwiki_write` 任何模式都可以顺手改 title/summary：顶层参数合并到 meta patch 并优先于同名 meta 字段。meta 可为对象或 JSON 字符串，解析失败或结果不是对象时返回带原因的 INVALID_META；其中 tags/aliases 的逗号分隔字符串会去掉首尾空白、空项并转成数组。meta 模式也可仅传 title/summary；append 修改页头时必须带 rev。
 - MCP prompts：`memwiki-ingest`、兼容保留 `memwiki-lint`，新增 `memwiki-curate`：lint → 判断 overlap/fact_repeat 归属并 merge/edit → stale 核实后 verify、否则标待核实 → inbox 归档 → open 反馈和 usage 汇总（只汇报不改代码）→ 再次 lint。纠正优先于补充，只写当前正确说法，删除前确认已在归属页存在，不改写 git 历史。
 - 写入方 ID 来自配置（`MEMWIKI_AGENT`），每个客户端配置各自的值。
 - 工具返回中文为主的纯文本（便于模型阅读），错误返回 `isError` 并带错误码。

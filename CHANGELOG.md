@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1（未发布）
+
+- `INVALID_META` 返回字段名和具体原因，错误 details 保留结构化字段信息，MCP 正常显示。
+- `memwiki_write` 所有模式均可用 title/summary 更新页头；append 修改页头须带 rev。
+- `memwiki_write.meta` 兼容对象或 JSON 字符串，tags/aliases 的逗号分隔字符串自动规范为数组。
+- section 替换时去掉 body 开头与目标同名的标题行，避免重复标题。
+- create 拒绝超过 120 个字符的 summary，报告当前长度，工具 schema 明示限制。
+- create 遇到 `_` 开头的文件名时明确提示其保留给特殊页面。
+
 ## 0.2.0（未发布）
 
 - 新建相似页拦截 `SIMILAR_EXISTS`，支持注明理由后 force；remember 不拦截。

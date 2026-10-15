@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { parse, stringify } from 'yaml'
 import { PAGE_TYPES, PAGE_STATUSES } from '../types.ts'
-import type { PageMeta, MetaPatch, PageType } from '../types.ts'
+import type { PageMeta, MetaPatch, PageType, MetaIssue } from '../types.ts'
 
 const ORDER = ['title', 'summary', 'type', 'tags', 'aliases', 'status', 'created', 'updated', 'updated_by', 'verified', 'sources', 'superseded_by', 'project', 'pinned']
 const stringArray = (v: unknown) => Array.isArray(v) && v.every(x => typeof x === 'string')
@@ -17,6 +17,22 @@ const valid: Record<string, (v: unknown) => boolean> = {
   project: v => typeof v === 'string', pinned: v => typeof v === 'boolean',
 }
 const required = ['title', 'summary', 'type', 'status', 'created', 'updated', 'updated_by']
+
+function invalidReason(field: string, value: unknown): string {
+  if (['tags', 'aliases', 'sources'].includes(field)) return '必须是字符串数组'
+  if (field === 'type') return '必须是以下类型之一：' + PAGE_TYPES.join('、')
+  if (field === 'status') return '必须是以下状态之一：' + PAGE_STATUSES.join('、')
+  if (['created', 'verified'].includes(field)) return '必须是有效日期（YYYY-MM-DD）'
+  if (field === 'updated') return '必须是带时区的有效 ISO 日期时间'
+  if (field === 'pinned') return '必须是布尔值'
+  if (field === 'project') return '必须是字符串'
+  if (typeof value !== 'string' || !value.trim()) return '必须是非空字符串'
+  if (field === 'summary') {
+    if ([...value].length > 120) return `超过 120 字（当前 ${[...value].length}）`
+    return '必须是单行文本'
+  }
+  return '取值非法'
+}
 
 const pad = (n: number, width = 2) => String(Math.trunc(Math.abs(n))).padStart(width, '0')
 
@@ -53,7 +69,7 @@ export function applyMetaPatch(meta: PageMeta, patch: MetaPatch): PageMeta {
 }
 
 /** Parses YAML frontmatter; malformed or invalid metadata yields readable defaults and metaError. */
-export function parsePage(raw: string): { meta: PageMeta; body: string; metaError?: string } {
+export function parsePage(raw: string): { meta: PageMeta; body: string; metaError?: string; metaIssues?: MetaIssue[] } {
   const match = /^(?:\uFEFF)?---[ \t]*\r?\n([\s\S]*?)^---[ \t]*(?:\r?\n|$)/m.exec(raw)
   const hasOpening = /^(?:\uFEFF)?---[ \t]*(?:\r?\n|$)/.test(raw)
   const body = match && match.index === 0 ? raw.slice(match[0].length) : raw
@@ -65,17 +81,21 @@ export function parsePage(raw: string): { meta: PageMeta; body: string; metaErro
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error()
     input = value as Record<string, unknown>
   } catch { return { meta: fallback, body, metaError: '页头 YAML 无法解析' } }
-  const errors = required.filter(k => !(k in input))
+  const errors: MetaIssue[] = required.filter(k => !(k in input)).map(field => ({ field, reason: '缺少必填字段' }))
   const meta = { ...fallback, ...input }
   for (const [key, check] of Object.entries(valid)) {
     if (key in input && !check(input[key])) {
-      errors.push(key)
+      errors.push({ field: key, reason: invalidReason(key, input[key]) })
       if (key in fallback) meta[key] = fallback[key]
       else delete meta[key]
     }
   }
-  if (meta.status === 'superseded' && !meta.superseded_by) errors.push('superseded_by')
-  return { meta: meta as PageMeta, body, ...(errors.length ? { metaError: '页头字段缺失或非法：' + [...new Set(errors)].join(', ') } : {}) }
+  if (meta.status === 'superseded' && !meta.superseded_by && !errors.some(e => e.field === 'superseded_by')) {
+    errors.push({ field: 'superseded_by', reason: 'status 为 superseded 时必填' })
+  }
+  return { meta: meta as PageMeta, body, ...(errors.length ? {
+    metaError: errors.map(e => `${e.field} ${e.reason}`).join('；'), metaIssues: errors,
+  } : {}) }
 }
 
 /** Serializes metadata in the canonical field order, then unknown keys in original order. */

@@ -29,6 +29,23 @@ function formatError(err: unknown): ReturnType<typeof text> {
   return text(`ERROR：${err instanceof Error ? err.message : String(err)}`, true)
 }
 
+function normalizeMeta(value: Record<string, unknown> | string | undefined): MetaPatch | undefined {
+  if (value === undefined) return undefined
+  let parsed: unknown = value
+  if (typeof value === 'string') {
+    try { parsed = JSON.parse(value) }
+    catch { throw new MemwikiError('INVALID_META', 'meta JSON 解析失败：必须是有效 JSON 字符串', { errors: [{ field: 'meta', reason: 'JSON 解析失败' }] }) }
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new MemwikiError('INVALID_META', 'meta 必须是对象（JSON 不能是数组、null 或标量）', { errors: [{ field: 'meta', reason: '必须是对象' }] })
+  }
+  const patch = { ...parsed } as MetaPatch
+  for (const key of ['tags', 'aliases'] as const) {
+    if (typeof patch[key] === 'string') patch[key] = (patch[key] as string).split(/[,，]/).map(s => s.trim()).filter(Boolean)
+  }
+  return patch
+}
+
 function pad(n: number) { return String(n).padStart(2, '0') }
 
 function formatMeta(page: { meta: Record<string, unknown>; rev: string }): string[] {
@@ -56,7 +73,7 @@ function formatMeta(page: { meta: Record<string, unknown>; rev: string }): strin
 /** Builds an MCP server bound to an open Memwiki instance (§8.1). */
 export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ vaultDir: wiki.config.dir })): McpServer {
   const server = new McpServer(
-    { name: 'memwiki', version: '0.2.0' },
+    { name: 'memwiki', version: '0.2.1' },
     { instructions: INSTRUCTIONS, capabilities: { tools: {}, prompts: {} } },
   )
 
@@ -155,6 +172,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
       '模式：create 新建（要 title、一句话 summary、body）；append 追加一段（可用 heading 指定追加到哪一节）；',
       'section 替换某一节的内容（heading，可写 父标题/子标题）；edit 精确替换一句（old 必须在页面里恰好出现一次）；',
       'replace 整页重写；meta 只改页头字段（如 status、tags、verified）。不要写密钥、密码、token，写"去哪里拿"。',
+      '任何模式都可以顺手改 title/summary（append 改页头时必须带 rev）；顶层 title/summary 优先于 meta 中的同名字段。',
     ].join(''),
     inputSchema: {
       page: z.string().describe('页面 ID，如 projects/netx/发布流程、topics/PowerShell 中文乱码；非 create 时也可以是标题或别名'),
@@ -165,9 +183,9 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
       old: z.string().optional().describe('edit：要被替换的原文，必须唯一'),
       new: z.string().optional().describe('edit：替换后的文字'),
       heading: z.string().optional().describe('section 要替换的标题；append 时表示追加到这一节末尾'),
-      meta: z.record(z.string(), z.unknown()).optional().describe('页头字段，如 {"type":"howto","tags":["windows"]}；值为 null 表示删除该字段。create 时可指定 type（user/rule/project/topic/howto/decision/reference）'),
-      title: z.string().optional().describe('create 必填：页面标题'),
-      summary: z.string().optional().describe('create 必填：一句话摘要（≤120 字，能单独看懂，会出现在所有 AI 的开场目录里）'),
+      meta: z.union([z.record(z.string(), z.unknown()), z.string()]).optional().describe('页头字段对象或 JSON 字符串，如 {"type":"howto","tags":["windows"]}；tags/aliases 也可传逗号分隔字符串；值为 null 表示删除该字段。create 时可指定 type（user/rule/project/topic/howto/decision/reference）'),
+      title: z.string().optional().describe('页面标题；create 必填，任何模式均可修改'),
+      summary: z.string().optional().describe('一句话摘要（≤120 个字符，超了会被拒；能单独看懂，会出现在所有 AI 的开场目录里）；create 必填，任何模式均可修改'),
       force: z.boolean().optional().describe('create：确实是不同主题时跳过相似拦截；必须写明 reason'),
       reason: z.string().describe('为什么写/改，会记进日志和 git 提交'),
       source: z.string().optional().describe('依据，如 session:claude/<会话ID>、file:netx/README.md、url:https://...'),
@@ -176,30 +194,37 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     try {
       const id = args.page
       const ctx = { agent: wiki.config.agent, reason: args.reason, source: args.source }
+      let meta = normalizeMeta(args.meta)
+      if (args.title !== undefined || args.summary !== undefined) {
+        meta = { ...meta, ...(args.title !== undefined ? { title: args.title } : {}), ...(args.summary !== undefined ? { summary: args.summary } : {}) }
+      }
       let op: WriteOp
       switch (args.mode) {
         case 'create':
-          if (!args.title || !args.summary) throw new MemwikiError('INVALID_META', 'create 需要 title 和 summary')
-          op = { kind: 'create', id, meta: { ...(args.meta as object), title: args.title, summary: args.summary }, body: args.body ?? '', force: args.force }
+          if (!args.title || !args.summary) {
+            const errors = ['title', 'summary'].filter(field => !args[field as 'title' | 'summary']).map(field => ({ field, reason: 'create 时必填且不能为空' }))
+            throw new MemwikiError('INVALID_META', errors.map(e => `${e.field} ${e.reason}`).join('；'), { errors })
+          }
+          op = { kind: 'create', id, meta: { ...meta, title: args.title, summary: args.summary }, body: args.body ?? '', force: args.force }
           break
         case 'replace':
           if (!args.rev) throw new MemwikiError('INVALID_META', 'replace 需要 rev')
-          op = { kind: 'replace', id, rev: args.rev, body: args.body ?? '', meta: args.meta as MetaPatch | undefined }
+          op = { kind: 'replace', id, rev: args.rev, body: args.body ?? '', meta }
           break
         case 'append':
-          op = { kind: 'append', id, text: args.text ?? args.body ?? '', section: args.heading, rev: args.rev }
+          op = { kind: 'append', id, text: args.text ?? args.body ?? '', section: args.heading, rev: args.rev, meta }
           break
         case 'edit':
           if (!args.rev) throw new MemwikiError('INVALID_META', 'edit 需要 rev')
-          op = { kind: 'edit', id, rev: args.rev, old: args.old ?? '', new: args.new ?? '' }
+          op = { kind: 'edit', id, rev: args.rev, old: args.old ?? '', new: args.new ?? '', meta }
           break
         case 'section':
           if (!args.rev || !args.heading) throw new MemwikiError('INVALID_META', 'section 需要 rev 和 heading')
-          op = { kind: 'section', id, rev: args.rev, heading: args.heading, body: args.body ?? '' }
+          op = { kind: 'section', id, rev: args.rev, heading: args.heading, body: args.body ?? '', meta }
           break
         case 'meta':
-          if (!args.rev || !args.meta) throw new MemwikiError('INVALID_META', 'meta 需要 rev 和 meta')
-          op = { kind: 'meta', id, rev: args.rev, meta: args.meta as MetaPatch }
+          if (!args.rev || !meta) throw new MemwikiError('INVALID_META', 'meta 需要 rev 和页头字段（meta 或 title/summary）')
+          op = { kind: 'meta', id, rev: args.rev, meta }
           break
       }
       // Resolve non-create refs to canonical IDs.

@@ -42,6 +42,11 @@ function findSection(body: string, query: string): Heading | undefined {
 }
 function sectionWrite(body: string, heading: string, text: string, append: boolean): string {
   if (!heading.trim()) throw new MemwikiError('INVALID_META', '标题不能为空')
+  if (!append) {
+    const leading = /^(?:[ \t]*\r?\n)* {0,3}#{1,6}[ \t]+(.+?)[ \t]*(?:\r?\n|$)/.exec(text)
+    const name = leading?.[1].replace(/[ \t]+#+[ \t]*$/, '').trim()
+    if (leading && name === heading.split('/').at(-1)!.trim()) text = text.slice(leading[0].length)
+  }
   const section = findSection(body, heading)
   if (!section) return joinText(body, '\n## ' + heading.split('/').at(-1)!.trim() + '\n\n' + text)
   const content = append ? joinText(body.slice(section.content, section.end), text) : joinText('', text)
@@ -58,6 +63,7 @@ export class Store {
   private ensurePageId(id: string): string {
     normalizeId(id)
     if (id.split('/').some(part => ignored.has(fold(part)))) throw new MemwikiError('INVALID_ID', '不能写入内部目录')
+    if (id.split('/').at(-1)!.startsWith('_')) throw new MemwikiError('INVALID_ID', '`_` 开头保留给特殊页面')
     if (isSpecialId(id)) throw new MemwikiError('INVALID_ID', '特殊文件不能作为普通页面写入')
     safeResolve(this.config.dir, idToRelPath(id))
     return id
@@ -162,7 +168,7 @@ export class Store {
   private updated(meta: PageMeta, id: string, ctx: WriteContext): PageMeta {
     const next = { ...meta, updated: nowIso(), updated_by: ctx.agent }
     if (ctx.source) {
-      if (next.sources !== undefined && (!Array.isArray(next.sources) || !next.sources.every(s => typeof s === 'string'))) throw new MemwikiError('INVALID_META', 'sources 必须是字符串数组')
+      if (next.sources !== undefined && (!Array.isArray(next.sources) || !next.sources.every(s => typeof s === 'string'))) throw new MemwikiError('INVALID_META', 'sources 必须是字符串数组', { errors: [{ field: 'sources', reason: '必须是字符串数组' }] })
       next.sources = [...new Set([...(next.sources ?? []), ctx.source])]
     }
     if (id.startsWith('projects/') && id.split('/').length > 2 && !next.project) next.project = id.split('/')[1]
@@ -175,7 +181,8 @@ export class Store {
       const findings = scanSecrets(raw)
       if (findings.length) throw new MemwikiError('SECRET_DETECTED', '内容包含敏感信息，拒绝写入', { findings })
     }
-    if (parsePage(raw).metaError) throw new MemwikiError('INVALID_META', '页头字段缺失或非法')
+    const parsed = parsePage(raw)
+    if (parsed.metaError) throw new MemwikiError('INVALID_META', parsed.metaError, { errors: parsed.metaIssues ?? [{ field: 'meta', reason: parsed.metaError }] })
     return raw
   }
 
@@ -188,6 +195,9 @@ export class Store {
   /** Applies a write under a page lock and atomic rename; rev conflicts include the current rev. */
   async write(op: WriteOp, ctx: WriteContext): Promise<WriteResult> {
     const requested = this.ensurePageId(op.id)
+    if (op.kind === 'append' && op.meta !== undefined && op.rev === undefined) {
+      throw new MemwikiError('INVALID_META', 'append 修改页头需要 rev', { errors: [{ field: 'rev', reason: 'append 修改页头时必填' }] })
+    }
     const run = () => withLock(this.config.dir, requested, async () => {
       const actual = await this.existingId(requested)
       if (op.kind === 'create' && actual) throw new MemwikiError('EXISTS', '页面已经存在', { id: actual })
@@ -202,10 +212,10 @@ export class Store {
       let body: string
       if (op.kind === 'create') { meta = defaultMeta(id, op.meta); meta.created = localDate(); body = op.body }
       else {
-        meta = { ...page!.meta }
+        meta = applyMetaPatch(page!.meta, op.meta ?? {})
         body = page!.body
         switch (op.kind) {
-          case 'replace': body = op.body; if (op.meta) meta = applyMetaPatch(meta, op.meta); break
+          case 'replace': body = op.body; break
           case 'append': body = op.section ? sectionWrite(body, op.section, op.text, true) : joinText(body, op.text); break
           case 'edit': {
             if (!op.old) throw new MemwikiError('AMBIGUOUS_EDIT', 'old 不能为空')
@@ -216,7 +226,7 @@ export class Store {
             break
           }
           case 'section': body = sectionWrite(body, op.heading, op.body, false); break
-          case 'meta': meta = applyMetaPatch(meta, op.meta); break
+          case 'meta': break
         }
         // Creation date belongs to the original page, not to callers' patches.
         meta.created = page!.meta.created

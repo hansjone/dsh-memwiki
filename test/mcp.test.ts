@@ -135,7 +135,7 @@ test('maintenance MCP tools and curate prompt are registered and work through tr
   const { client, wiki } = await connect(t)
   const names = (await client.listTools()).tools.map(tool => tool.name)
   for (const name of ['memwiki_merge', 'memwiki_verify', 'memwiki_feedback', 'memwiki_usage']) assert.ok(names.includes(name))
-  assert.equal(client.getServerVersion()?.version, '0.2.0')
+  assert.equal(client.getServerVersion()?.version, '0.2.1')
   const prompts = await client.listPrompts()
   assert.ok(prompts.prompts.some(prompt => prompt.name === 'memwiki-curate'))
   const prompt = await client.getPrompt({ name: 'memwiki-curate' })
@@ -159,4 +159,108 @@ test('maintenance MCP tools and curate prompt are registered and work through tr
   assert.equal(wiki.feedbackList().length, 0)
   await call(client, 'memwiki_search', { query: 'zzzz-unfindable' })
   assert.match((await call(client, 'memwiki_usage', { days: 7 })).text, /SEARCH_ZERO/)
+})
+
+test('MCP title and summary update in every mode alongside metadata and body changes', async t => {
+  const { client, wiki } = await connect(t)
+  const page = 'topics/all-modes'
+  const created = await call(client, 'memwiki_write', { page, mode: 'create', title: '初始', summary: '初始摘要', body: 'original\n', reason: '初始化' })
+  assert.equal(created.isError, false, created.text)
+  const operations = [
+    { mode: 'replace', body: '## 相关\n旧文字\n', expected: '## 相关\n旧文字\n' },
+    { mode: 'section', heading: '相关', body: '## 相关\n替换文字\n', expected: '## 相关\n替换文字\n' },
+    { mode: 'edit', old: '替换文字', new: '精确文字', expected: '## 相关\n精确文字\n' },
+    { mode: 'append', text: '追加文字', expected: '## 相关\n精确文字\n追加文字\n' },
+    { mode: 'meta', expected: '## 相关\n精确文字\n追加文字\n' },
+  ]
+  for (const { expected, ...op } of operations) {
+    const before = (await wiki.read(page)).page
+    const title = `${op.mode} 标题`, summary = `${op.mode} 摘要`
+    const result = await call(client, 'memwiki_write', { page, ...op, rev: before.rev, title, summary, meta: { title: '被覆盖标题', summary: '被覆盖摘要', tags: ['保留'], custom: op.mode }, reason: '更新' })
+    assert.equal(result.isError, false, result.text)
+    const after = (await wiki.read(page)).page
+    assert.equal(after.meta.title, title)
+    assert.equal(after.meta.summary, summary)
+    assert.deepEqual(after.meta.tags, ['保留'])
+    assert.equal(after.meta.custom, op.mode)
+    assert.equal(after.meta.created, before.meta.created)
+    assert.equal(after.body, expected)
+  }
+  const before = (await wiki.read(page)).page
+  const metaOnly = await call(client, 'memwiki_write', { page, mode: 'meta', rev: before.rev, title: '仅标题', summary: '仅摘要', reason: '便捷页头' })
+  assert.equal(metaOnly.isError, false, metaOnly.text)
+  const current = (await wiki.read(page)).page
+  assert.equal(current.meta.title, '仅标题')
+  assert.equal(current.meta.summary, '仅摘要')
+  assert.equal(current.body, before.body)
+  const noRev = await call(client, 'memwiki_write', { page, mode: 'append', text: '不应追加', summary: '不应修改', reason: '缺少版本' })
+  assert.equal(noRev.isError, true)
+  assert.match(noRev.text, /INVALID_META.*rev/)
+  const conflict = await call(client, 'memwiki_write', { page, mode: 'append', rev: before.rev, text: '不应追加', title: '不应修改', reason: '旧版本' })
+  assert.equal(conflict.isError, true)
+  assert.match(conflict.text, /^CONFLICT/)
+  assert.equal((await wiki.read(page)).page.rev, current.rev)
+  assert.equal((await call(client, 'memwiki_write', { page, mode: 'append', text: '正常追加', reason: '无需版本的正文追加' })).isError, false)
+})
+
+test('MCP accepts JSON metadata and comma-delimited tags/aliases and rejects malformed metadata', async t => {
+  const { client, wiki } = await connect(t)
+  const page = 'topics/json-meta'
+  const created = await call(client, 'memwiki_write', { page, mode: 'create', title: 'JSON 兼容', summary: '对象序列化兼容', body: '正文\n', meta: JSON.stringify({ tags: ' windows, node ,,', aliases: '别名一， 别名二', custom: { keep: true } }), reason: '初始化' })
+  assert.equal(created.isError, false, created.text)
+  let current = (await wiki.read(page)).page
+  assert.deepEqual(current.meta.tags, ['windows', 'node'])
+  assert.deepEqual(current.meta.aliases, ['别名一', '别名二'])
+  assert.deepEqual(current.meta.custom, { keep: true })
+  for (const meta of [{ tags: 'a, b', aliases: '' }, JSON.stringify({ tags: ['a', 'b'], aliases: [] })]) {
+    const updated = await call(client, 'memwiki_write', { page, mode: 'meta', rev: current.rev, meta, reason: '兼容输入' })
+    assert.equal(updated.isError, false, updated.text)
+    current = (await wiki.read(page)).page
+    assert.deepEqual(current.meta.tags, ['a', 'b'])
+    assert.deepEqual(current.meta.aliases, [])
+    assert.deepEqual(current.meta.custom, { keep: true })
+  }
+  for (const meta of ['{broken-private-value', '[]', 'null', '42', 'true', '"string"']) {
+    const rejected = await call(client, 'memwiki_write', { page, mode: 'meta', rev: current.rev, meta, reason: '错误输入' })
+    assert.equal(rejected.isError, true)
+    assert.match(rejected.text, /^INVALID_META.*meta/)
+    assert.match(rejected.text, /JSON 解析失败|必须是对象/)
+    assert.match(rejected.text, /errors=.*field:meta.*reason:/)
+    assert.ok(!rejected.text.includes('broken-private-value'))
+    assert.equal((await wiki.read(page)).page.rev, current.rev)
+  }
+  const invalidFields = await call(client, 'memwiki_write', { page, mode: 'meta', rev: current.rev, meta: { tags: [1], summary: '摘'.repeat(137) }, reason: '字段错误' })
+  assert.equal(invalidFields.isError, true)
+  assert.match(invalidFields.text, /summary 超过 120 字（当前 137）/)
+  assert.match(invalidFields.text, /tags 必须是字符串数组/)
+  assert.match(invalidFields.text, /field:summary reason:超过 120 字/)
+  assert.match(invalidFields.text, /field:tags reason:必须是字符串数组/)
+  assert.equal((await wiki.read(page)).page.rev, current.rev)
+  const deleted = await call(client, 'memwiki_write', { page, mode: 'meta', rev: current.rev, meta: '{"custom":null,"tags":null}', reason: '删除字段' })
+  assert.equal(deleted.isError, false, deleted.text)
+  current = (await wiki.read(page)).page
+  assert.equal('custom' in current.meta, false)
+  assert.deepEqual(current.meta.tags, [])
+})
+
+test('MCP enforces summary length and reserved IDs and documents the write contract', async t => {
+  const { client, wiki } = await connect(t)
+  const tool = (await client.listTools()).tools.find(tool => tool.name === 'memwiki_write')!
+  assert.match(tool.description!, /任何模式都可以顺手改 title\/summary/)
+  const schema = tool.inputSchema.properties as Record<string, { description?: string }>
+  assert.match(schema.summary.description!, /≤120 个字符，超了会被拒/)
+  const input = { mode: 'create', title: '长度验证', summary: '😀'.repeat(121), body: '正文', reason: '验证' }
+  const tooLong = await call(client, 'memwiki_write', { page: 'topics/long-summary', ...input })
+  assert.equal(tooLong.isError, true)
+  assert.match(tooLong.text, /^INVALID_META.*summary 超过 120 字（当前 121）/)
+  assert.match(tooLong.text, /field:summary reason:超过 120 字/)
+  await assert.rejects(wiki.read('topics/long-summary'), { code: 'NOT_FOUND' })
+  const boundary = await call(client, 'memwiki_write', { page: 'topics/boundary', ...input, summary: '😀'.repeat(120) })
+  assert.equal(boundary.isError, false, boundary.text)
+  assert.equal((await wiki.read('topics/boundary')).page.meta.summary, '😀'.repeat(120))
+  for (const page of ['_private', 'topics/_private']) {
+    const reserved = await call(client, 'memwiki_write', { page, ...input, summary: '合法摘要' })
+    assert.equal(reserved.isError, true)
+    assert.match(reserved.text, /^INVALID_ID.*`_` 开头保留给特殊页面/)
+  }
 })

@@ -18,6 +18,7 @@ export type {
   PageType,
   PageStatus,
   PageMeta,
+  MetaIssue,
   Page,
   PageRecord,
   WikiLink,

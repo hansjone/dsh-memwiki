@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import { applyMetaPatch, computeRev, defaultMeta, parsePage, serializePage } from '../src/core/page.ts'
+import type { MetaPatch } from '../src/types.ts'
 
 test('frontmatter round-trips metadata, body, unknown values and canonical order', () => {
   const meta = defaultMeta('projects/netx/发布', { title: '发布', summary: '说明', customZ: { x: [1, true] }, customA: 'plugin', pinned: true, aliases: ['别名'] })
@@ -42,4 +43,22 @@ test('rev hashes raw bytes, including line endings and non-ASCII', () => {
   assert.equal(computeRev(raw), createHash('sha256').update(raw).digest('hex').slice(0, 12))
   assert.equal(computeRev(raw), computeRev(raw.toString()))
   assert.notEqual(computeRev('a\n'), computeRev('a\r\n'))
+})
+
+test('frontmatter validation gives field-level reasons without echoing rejected values', () => {
+  const invalid = {
+    title: ' ', summary: '摘'.repeat(137), type: 'invalid-kind', tags: 'invalid-tags', aliases: [1],
+    status: 'invalid-status', created: '2026-02-30', updated: 'yesterday', updated_by: '',
+    verified: 'today', sources: false, superseded_by: 3, project: 7, pinned: 'true',
+  }
+  const parsed = parsePage(serializePage(defaultMeta('topics/bad', invalid as unknown as MetaPatch), 'readable'))
+  for (const field of Object.keys(invalid)) assert.ok(parsed.metaIssues?.some(e => e.field === field), field)
+  assert.match(parsed.metaError!, /summary 超过 120 字（当前 137）/)
+  assert.match(parsed.metaError!, /tags 必须是字符串数组/)
+  assert.ok(!JSON.stringify(parsed.metaIssues).includes('invalid-tags'))
+  assert.equal(parsed.body, 'readable')
+  const missing = parsePage('---\ntitle: Title\n---\nbody')
+  assert.ok(missing.metaIssues?.some(e => e.field === 'summary' && e.reason === '缺少必填字段'))
+  const superseded = parsePage(serializePage(defaultMeta('topics/bad', { summary: '摘要', status: 'superseded' }), ''))
+  assert.deepEqual(superseded.metaIssues, [{ field: 'superseded_by', reason: 'status 为 superseded 时必填' }])
 })

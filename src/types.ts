@@ -33,6 +33,9 @@ export interface PageMeta {
   [extra: string]: unknown
 }
 
+/** A validation failure without echoing the rejected value. */
+export interface MetaIssue { field: string; reason: string }
+
 /** A page as loaded from disk. */
 export interface Page {
   /** Page ID: vault-relative path without `.md`, `/`-separated (§3.1). */
@@ -50,6 +53,8 @@ export interface Page {
   bytes: number
   /** Present when the frontmatter failed to parse or failed validation; `meta` then holds best-effort defaults. */
   metaError?: string
+  /** Field-level validation reasons; rejected values are never included. */
+  metaIssues?: MetaIssue[]
 }
 
 /** A parsed `[[link]]` occurrence (§3.4). */
@@ -94,13 +99,13 @@ export interface WriteContext {
 /** Frontmatter patch: `null` deletes a key. */
 export type MetaPatch = { [K in keyof PageMeta]?: PageMeta[K] | null }
 
-/** Write operations (§4.1). */
+/** Write operations (§4.1). Append metadata patches require rev; body-only appends do not. */
 export type WriteOp =
   | { kind: 'create'; id: string; meta: MetaPatch & { title: string; summary: string }; body: string; force?: boolean }
   | { kind: 'replace'; id: string; rev: string; body: string; meta?: MetaPatch }
-  | { kind: 'append'; id: string; text: string; section?: string; rev?: string }
-  | { kind: 'edit'; id: string; rev: string; old: string; new: string }
-  | { kind: 'section'; id: string; rev: string; heading: string; body: string }
+  | { kind: 'append'; id: string; text: string; section?: string; rev?: string; meta?: MetaPatch }
+  | { kind: 'edit'; id: string; rev: string; old: string; new: string; meta?: MetaPatch }
+  | { kind: 'section'; id: string; rev: string; heading: string; body: string; meta?: MetaPatch }
   | { kind: 'meta'; id: string; rev: string; meta: MetaPatch }
 
 export interface WriteResult {

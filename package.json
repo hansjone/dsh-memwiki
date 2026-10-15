@@ -1,6 +1,6 @@
 {
   "name": "dsh-memwiki",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "多个 AI 共用的记忆 wiki：Markdown/Obsidian 库 + MCP 服务，DeepSeek Harness、Claude Code、Codex、Cursor 通用。 · Shared memory wiki for AI agents: an Obsidian-compatible Markdown vault served over MCP.",
   "type": "module",
   "main": "lib/index.js",

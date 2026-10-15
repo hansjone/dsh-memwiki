@@ -86,6 +86,71 @@ test('section replacement respects nesting, parent paths, absent headings and fe
   assert.ok(!parent.body.includes('replacement'))
 })
 
+test('section strips a leading duplicate heading for existing and new sections', async t => {
+  const { store, create } = await fixture(t)
+  let { page } = await create('topics/duplicate-heading', '## 相关\n旧内容\n## 尾节\n保留\n')
+  page = (await store.write({ kind: 'section', id: page.id, rev: page.rev, heading: '相关', body: '## 相关\n新内容\n' }, ctx)).page
+  assert.equal(page.body, '## 相关\n新内容\n## 尾节\n保留\n')
+  page = (await store.write({ kind: 'section', id: page.id, rev: page.rev, heading: '新增', body: '## 新增\n新增内容\n' }, ctx)).page
+  assert.ok(page.body.endsWith('## 新增\n\n新增内容\n'))
+  page = (await store.write({ kind: 'section', id: page.id, rev: page.rev, heading: '相关', body: '### 子节\n保留标题\n' }, ctx)).page
+  assert.ok(page.body.includes('## 相关\n### 子节\n保留标题\n## 尾节'))
+  page = (await store.write({ kind: 'section', id: page.id, rev: page.rev, heading: '相关/子节', body: '\r\n  ### 子节 ###\r\n更新子节\r\n' }, ctx)).page
+  assert.ok(page.body.includes('### 子节\n更新子节\r\n## 尾节'))
+  page = (await store.write({ kind: 'section', id: page.id, rev: page.rev, heading: '相关', body: '```md\n## 相关\n```\n' }, ctx)).page
+  assert.ok(page.body.includes('## 相关\n```md\n## 相关\n```\n'))
+})
+
+test('invalid metadata reports reasons in message and details and does not change the page', async t => {
+  const { store, create } = await fixture(t)
+  const { page } = await create('topics/validation', 'safe\n')
+  await assert.rejects(store.write({ kind: 'meta', id: page.id, rev: page.rev, meta: { summary: '摘'.repeat(137), tags: 42 as unknown as string[] } }, ctx), err => {
+    assert.ok(err instanceof MemwikiError)
+    assert.equal(err.code, 'INVALID_META')
+    assert.match(err.message, /summary 超过 120 字（当前 137）/)
+    assert.match(err.message, /tags 必须是字符串数组/)
+    assert.deepEqual(err.details?.errors, [{ field: 'summary', reason: '超过 120 字（当前 137）' }, { field: 'tags', reason: '必须是字符串数组' }])
+    return true
+  })
+  assert.equal((await store.get(page.id)).rev, page.rev)
+  for (const summary of ['摘'.repeat(121), '😀'.repeat(121)]) {
+    await assert.rejects(create('topics/too-long', '', { summary }), err => {
+      assert.ok(err instanceof MemwikiError)
+      assert.equal(err.code, 'INVALID_META')
+      assert.match(err.message, /summary 超过 120 字（当前 121）/)
+      return true
+    })
+    await assert.rejects(store.get('topics/too-long'), code('NOT_FOUND'))
+  }
+  const boundary = '😀'.repeat(120)
+  assert.equal((await create('topics/boundary', '', { summary: boundary })).page.meta.summary, boundary)
+})
+
+test('append metadata requires a revision and checks conflicts before applying patches', async t => {
+  const { store, create } = await fixture(t)
+  const { page } = await create('topics/append-meta', 'original\n')
+  await assert.rejects(store.write({ kind: 'append', id: page.id, text: 'bad', meta: { title: 'bad' } }, ctx), code('INVALID_META'))
+  await assert.rejects(store.write({ kind: 'append', id: page.id, rev: 'stale', text: 'bad', meta: { title: 'bad' } }, ctx), code('CONFLICT'))
+  assert.equal((await store.get(page.id)).rev, page.rev)
+  const result = await store.write({ kind: 'append', id: page.id, rev: page.rev, text: 'added', meta: { title: 'new', summary: '新摘要' } }, ctx)
+  assert.equal(result.page.meta.title, 'new')
+  assert.equal(result.page.meta.summary, '新摘要')
+  assert.equal(result.page.body, 'original\nadded\n')
+})
+
+test('create clearly rejects underscore filenames reserved for special pages', async t => {
+  const { store, create } = await fixture(t)
+  for (const id of ['_private', 'topics/_private']) {
+    await assert.rejects(create(id), err => {
+      assert.ok(err instanceof MemwikiError)
+      assert.equal(err.code, 'INVALID_ID')
+      assert.match(err.message, /`_` 开头保留给特殊页面/)
+      return true
+    })
+    await assert.rejects(store.get(id), code('NOT_FOUND'))
+  }
+})
+
 test('append into a section stays before its next sibling and preserves nested children', async t => {
   const { store, create } = await fixture(t)
   let { page } = await create('topics/append', '## A\na\n### Child\nc\n## B\nb\n')
