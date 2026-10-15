@@ -36,7 +36,7 @@ export function localDate(at = new Date()): string {
 /** Supplies inferred metadata for a new ID, then applies the supplied patch. */
 export function defaultMeta(id: string, patch: MetaPatch = {}): PageMeta {
   const parts = id.split('/')
-  const kind: Record<string, PageType> = { user: 'user', rules: 'rule', projects: 'project', topics: 'topic', howto: 'howto', decisions: 'decision', reference: 'reference', inbox: 'inbox' }
+  const kind: Record<string, PageType> = { user: 'user', rules: 'rule', projects: 'project', topics: 'topic', howto: 'howto', decisions: 'decision', reference: 'reference', inbox: 'inbox', meta: 'meta' }
   const meta: PageMeta = { title: parts.at(-1) || 'Untitled', summary: '', type: kind[parts[0]] ?? 'topic', tags: [], aliases: [], status: 'active', created: localDate(), updated: nowIso(), updated_by: 'external' }
   if (parts[0] === 'projects' && parts.length > 2) meta.project = parts[1]
   return applyMetaPatch(meta, patch)

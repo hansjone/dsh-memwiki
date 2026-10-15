@@ -68,7 +68,7 @@ export class MemwikiSettingsService {
   }
   async health(): Promise<HealthResult> {
     const { config, records, inboxEntries } = await this.snapshot()
-    const issues = lintRecords(records, { staleDays: config.staleDays, now: new Date(), inboxEntries, scanSecrets: config.secretScan ? scanSecrets : undefined })
+    const issues = lintRecords(records, { staleDays: config.staleDays, overlapThreshold: config.overlapThreshold, now: new Date(), inboxEntries, scanSecrets: config.secretScan ? scanSecrets : undefined })
     if (await isGitRepo(config.dir)) {
       const dirty = await listUncommitted(config.dir)
       if (dirty.length) issues.push({ code: 'uncommitted', message: `有 ${dirty.length} 个未提交文件`, fixable: true })

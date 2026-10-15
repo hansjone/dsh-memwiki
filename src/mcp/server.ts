@@ -8,10 +8,11 @@ import { SecretStore } from '../secrets/store.ts'
 
 const INSTRUCTIONS = `共享记忆 wiki 规则：
 1. 任务开始调用 memwiki_context；写入前先 memwiki_search。
-2. 更新已有页面优于新建；一个事实一个归属。
-3. 页面不写密码/token；低风险凭据用凭据库，页面写 secret:<名字> 引用；读到旧内容先核实再改。
+2. 一个事实一个归属；纠正优先于补充，只写当前正确说法。
+3. 页面不写凭据值，只写 secret:<名字>；核实后调用 memwiki_verify。
 4. CONFLICT 时重新 memwiki_read，在最新 rev 上再写。
-5. 拿不准归属用 memwiki_remember 进 inbox。`
+5. 拿不准归属用 memwiki_remember 进 inbox；禁止改写 git 历史。
+细则见 _guide；任务开始若没读过就 memwiki_read _guide；工具不好用时用 memwiki_feedback 记下。`
 
 function text(body: string, isError = false) {
   return { content: [{ type: 'text' as const, text: body }], isError }
@@ -55,7 +56,7 @@ function formatMeta(page: { meta: Record<string, unknown>; rev: string }): strin
 /** Builds an MCP server bound to an open Memwiki instance (§8.1). */
 export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ vaultDir: wiki.config.dir })): McpServer {
   const server = new McpServer(
-    { name: 'memwiki', version: '0.1.0' },
+    { name: 'memwiki', version: '0.2.0' },
     { instructions: INSTRUCTIONS, capabilities: { tools: {}, prompts: {} } },
   )
 
@@ -167,6 +168,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
       meta: z.record(z.string(), z.unknown()).optional().describe('页头字段，如 {"type":"howto","tags":["windows"]}；值为 null 表示删除该字段。create 时可指定 type（user/rule/project/topic/howto/decision/reference）'),
       title: z.string().optional().describe('create 必填：页面标题'),
       summary: z.string().optional().describe('create 必填：一句话摘要（≤120 字，能单独看懂，会出现在所有 AI 的开场目录里）'),
+      force: z.boolean().optional().describe('create：确实是不同主题时跳过相似拦截；必须写明 reason'),
       reason: z.string().describe('为什么写/改，会记进日志和 git 提交'),
       source: z.string().optional().describe('依据，如 session:claude/<会话ID>、file:netx/README.md、url:https://...'),
     },
@@ -178,7 +180,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
       switch (args.mode) {
         case 'create':
           if (!args.title || !args.summary) throw new MemwikiError('INVALID_META', 'create 需要 title 和 summary')
-          op = { kind: 'create', id, meta: { ...(args.meta as object), title: args.title, summary: args.summary }, body: args.body ?? '' }
+          op = { kind: 'create', id, meta: { ...(args.meta as object), title: args.title, summary: args.summary }, body: args.body ?? '', force: args.force }
           break
         case 'replace':
           if (!args.rev) throw new MemwikiError('INVALID_META', 'replace 需要 rev')
@@ -229,6 +231,55 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     } catch (e) { return formatError(e) }
   })
 
+  server.registerTool('memwiki_merge', {
+    description: '把多个旧页面合并到一个归属页。先确认原内容已在归属页；body 由你整理，不传则保留目标正文。旧页保留 superseded 跳转，链接自动改写，一次提交。',
+    inputSchema: { from: z.array(z.string()).min(1), into: z.string(), rev: z.string(), body: z.string().optional(),
+      meta: z.record(z.string(), z.unknown()).optional(), reason: z.string().trim().min(1) },
+  }, async ({ from, into, rev, body, meta, reason }) => {
+    try {
+      const { result } = await wiki.merge({ from, into, rev, body, meta: meta as MetaPatch | undefined, ctx: { agent: wiki.config.agent, reason } })
+      return text(`已合并 ${result.from.join('、')} → [[${result.page.id}]]；旧页保留跳转。\nrev：${result.page.rev}`)
+    } catch (e) { return formatError(e) }
+  })
+
+  server.registerTool('memwiki_verify', {
+    description: '读到并核实过页面后调用：verified 设为本地今天，stale 恢复 active；不需要 rev，不修改正文。',
+    inputSchema: { page: z.string(), note: z.string().optional() },
+  }, async ({ page, note }) => {
+    try {
+      const { result } = await wiki.verify(page, { note, ctx: { agent: wiki.config.agent, reason: '核实内容' } })
+      return text(`已核实 [[${result.page.id}]]：${result.page.meta.verified}\nrev：${result.page.rev}`)
+    } catch (e) { return formatError(e) }
+  })
+
+  server.registerTool('memwiki_feedback', {
+    description: '记录工具 bug、使用阻力、缺失能力或规则不清（action=add，默认）；list 列反馈；resolve 按 id 与 resolution 标记解决。不要包含凭据。',
+    inputSchema: { action: z.enum(['add', 'list', 'resolve']).optional(), kind: z.enum(['bug', 'friction', 'missing', 'rule']).optional(),
+      title: z.string().optional(), scenario: z.string().optional(), expected: z.string().optional(), actual: z.string().optional(),
+      id: z.string().optional(), resolution: z.string().optional(), all: z.boolean().optional() },
+  }, async (args) => {
+    try {
+      const ctx = { agent: wiki.config.agent, reason: '记录工具反馈' }
+      if (args.action === 'list') return text(JSON.stringify(wiki.feedbackList(args.all), null, 2))
+      if (args.action === 'resolve') {
+        if (!args.id || !args.resolution) throw new MemwikiError('INVALID_META', 'resolve 需要 id 和 resolution')
+        await wiki.feedbackResolve(args.id, args.resolution, ctx)
+        return text(`已解决反馈 ${args.id}`)
+      }
+      if (!args.kind || !args.title || !args.scenario || !args.expected || !args.actual) throw new MemwikiError('INVALID_META', 'add 需要 kind/title/scenario/expected/actual')
+      const result = await wiki.feedback({ kind: args.kind, title: args.title, scenario: args.scenario, expected: args.expected, actual: args.actual, ctx })
+      return text(`已记录 ${result.id}，见 [[${result.page.id}]]`)
+    } catch (e) { return formatError(e) }
+  })
+
+  server.registerTool('memwiki_usage', {
+    description: '汇总本地使用信号：各事件次数及零结果查询 Top 10；不含页面正文或凭据。用于整理时汇报改进线索。',
+    inputSchema: { days: z.number().positive().optional() },
+  }, async ({ days }) => {
+    try { return text(JSON.stringify(await wiki.usage(days), null, 2)) }
+    catch (e) { return formatError(e) }
+  })
+
   server.registerTool('memwiki_move', {
     description: '改名或移动页面，所有指向它的 [[链接]] 会自动改写。',
     inputSchema: {
@@ -270,7 +321,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
   })
 
   server.registerTool('memwiki_lint', {
-    description: '体检记忆库：断链、孤立页、重复标题、缺摘要、页头错误、可能过时、inbox 积压、疑似密钥、未提交改动。fix=true 只自动修安全的项（标记过时、补页头默认值、提交）。',
+    description: '体检记忆库：格式、链接、过时、内容 overlap、关键事实 fact_repeat、open 反馈与 git。fix=true 只自动修安全项；内容重叠、事实重复与反馈汇总不可自动修。',
     inputSchema: {
       fix: z.boolean().optional().describe('是否自动修复，默认否'),
     },
@@ -278,7 +329,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     try {
       const { issues, fixed } = await wiki.lint({ fix: !!fix, agent: wiki.config.agent })
       if (!issues.length) return text(fix ? `体检完成，修复 ${fixed} 项；当前无问题。` : '体检通过，无问题。')
-      const lines = issues.map(i => `- [${i.code}]${i.page ? ` [[${i.page}]]` : ''} ${i.message}${i.fixable ? '（可修）' : ''}`)
+      const lines = issues.map(i => `- [${i.code}]${i.severity ? `（${i.severity === 'info' ? '提示' : '警告'}）` : ''}${i.page ? ` [[${i.page}]]` : ''} ${i.message}${i.fixable ? '（可修）' : ''}`)
       if (fix) lines.unshift(`已自动修复 ${fixed} 项。剩余问题：`)
       return text(lines.join('\n'))
     } catch (e) { return formatError(e) }
@@ -317,6 +368,16 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
       },
     }],
   }))
+
+  server.registerPrompt('memwiki-curate', {
+    description: '一次完成内容收敛、核实、inbox 归档和反馈/使用信号汇总',
+  }, async () => ({ messages: [{ role: 'user' as const, content: { type: 'text' as const, text: `请整理记忆库：
+1. 先 memwiki_read _guide，调用 memwiki_lint；纠正优先于补充，页面只写当前正确说法。
+2. 对 overlap / fact_repeat 核对来源并判断事实归属；用 memwiki_merge 或 memwiki_write edit 收敛到一页，其余改为链接。删除内容前确认已在归属页存在；不要机械删除正常的链接引用。
+3. 对 stale 页核实：能核实就 memwiki_verify；不能核实就在页面标注待核实，保留 stale。
+4. 搜索相关页后归档 inbox，确认信息已归入再移除原条目。
+5. 用 memwiki_feedback action=list 与 memwiki_usage 汇总 open 反馈及使用信号；只汇报不改代码。工具问题、规则不清或有价值的搜索缺口用 feedback 留下可复现的场景。
+6. 再跑 lint，汇报删并修改摘要和剩余不确定项。禁止改写 git 历史。` } }] }))
 
   server.registerPrompt('memwiki-lint', {
     description: '体检并修复记忆库的工作流',

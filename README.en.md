@@ -51,6 +51,8 @@ Precedence: CLI > env > vault `memwiki.json` `settings` > defaults.
 | Context budget (bytes) | `--budget` | `MEMWIKI_CONTEXT_BUDGET` | 4096 |
 | Stale days | — | vault settings | 90 |
 | Secret scan | — | vault settings | on |
+| Similar-create threshold | — | `settings.similarCreateThreshold` | 0.72 |
+| Body overlap threshold | — | `settings.overlapThreshold` | 0.70 |
 
 ## MCP tools
 
@@ -59,14 +61,18 @@ Precedence: CLI > env > vault `memwiki.json` `settings` > defaults.
 | `memwiki_context` | Compact catalog (session start) |
 | `memwiki_search` | Full-text search |
 | `memwiki_read` | Read page (rev, backlinks, broken links) |
-| `memwiki_write` | Write (create/replace/append/edit/section/meta) |
+| `memwiki_write` | Write (create/replace/append/edit/section/meta); similar creates require justified force |
 | `memwiki_remember` | Quick inbox capture + related pages |
 | `memwiki_move` | Rename/move and rewrite links |
+| `memwiki_merge` | Merge into one owner, rewrite links, retain source redirects; optional body/meta and required target rev |
+| `memwiki_verify` | Refresh verified date and restore stale to active, without rev |
+| `memwiki_feedback` | add/list/resolve monthly tool and rule feedback |
+| `memwiki_usage` | Local event counts and Top 10 zero-result queries |
 | `memwiki_delete` / `memwiki_restore` | Trash / restore |
-| `memwiki_lint` | Health check (`fix` optional) |
+| `memwiki_lint` | Health check, including overlap/fact_repeat/feedback_open; those three cannot be auto-fixed |
 | `memwiki_log` | Recent changes |
 
-Prompts: `memwiki-ingest`, `memwiki-lint`.
+Prompts: `memwiki-ingest`, `memwiki-lint`, `memwiki-curate` (converge content, verify, archive inbox, report feedback and usage; no code changes). The vault's `_guide` is the single source of detailed rules; the skill and server instructions are summaries.
 
 ## CLI
 
@@ -77,6 +83,10 @@ dsh-memwiki context [--project <name>]
 dsh-memwiki search <query>
 dsh-memwiki read <page>
 dsh-memwiki lint [--fix]
+dsh-memwiki merge <from>... --into <page> --rev <rev> --reason <why> [--body-file <md>] [--meta-file <json>]
+dsh-memwiki verify <page> [--note <note>]
+dsh-memwiki usage [--days 7]
+dsh-memwiki feedback list [--all]
 dsh-memwiki reindex
 dsh-memwiki sync
 dsh-memwiki setup <claude|codex|cursor|dsh> [--write]
@@ -92,6 +102,12 @@ Markdown + YAML frontmatter + `[[wikilinks]]`. Layout: [docs/DESIGN.md](docs/DES
 ## FAQ
 
 **CONFLICT**: Re-`memwiki_read` for a fresh `rev`, then write again.
+
+**SIMILAR_EXISTS**: Read up to three candidates and update an existing page. Use `force: true` only for a distinct topic with a nonempty reason, preserved verbatim in the log. Inbox capture is exempt.
+
+**Maintenance**: One fact has one owner; correct existing pages before adding information. Supply the consolidated merge body yourself and confirm all unique information is retained before removing source content. Sources remain superseded redirects; git retains the original text. Repeated fact tokens are advisory; IP addresses in reference links can be normal.
+
+**Feedback and usage**: Monthly feedback pages live in `meta/feedback/YYYY-MM.md` (type=meta); context shows only the open count. Git-ignored `.memwiki/usage.jsonl` rotates at 1 MB, keeping one previous file. Signals contain event counts, redacted queries and hashed page IDs, never page bodies, write reasons or credential values.
 
 **SECRET_DETECTED**: Key-like content rejected; store where to get secrets, not the secrets.
 

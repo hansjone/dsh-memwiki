@@ -1,7 +1,7 @@
 import type { ContextOptions, PageRecord } from '../types.ts'
 import { nowIso } from '../core/page.ts'
 
-const ORDER = ['user', 'rules', 'projects', 'topics', 'howto', 'decisions', 'reference']
+const ORDER = ['user', 'rules', 'projects', 'topics', 'howto', 'decisions', 'reference', 'meta']
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0
 const oneLine = (text: string) => text.replace(/[\r\n]+/gu, ' ').trim()
 const visible = (r: PageRecord) => !['index', 'log'].includes(r.id.toLowerCase()) && !r.id.split('/').at(-1)!.startsWith('_')
@@ -46,11 +46,12 @@ export function buildContext(records: PageRecord[], opts: ContextOptions): strin
   const requested = opts.budgetBytes ?? 4096
   const budget = Number.isFinite(requested) ? Math.max(0, Math.floor(requested)) : 4096
   // Inbox pages are raw captures; they are summarized by the inbox count footer instead of listed.
-  const pages = records.filter(r => visible(r) && r.meta.type !== 'inbox')
+  const pages = records.filter(r => visible(r) && r.meta.type !== 'inbox' && r.meta.status !== 'superseded'
+    && !/^inbox\//iu.test(r.id) && !/^meta\/feedback\//iu.test(r.id))
   const priority = (r: PageRecord) => r.meta.pinned ? 0 : ['rule', 'user'].includes(r.meta.type) ? 1
     : opts.project && (r.meta.project ?? (top(r) === 'projects' ? r.id.split('/')[1] : undefined)) === opts.project ? 2 : 3
   const ordered = [...pages].sort((a, b) => priority(a) - priority(b) || newest(a, b))
-  const header = `记忆库：${oneLine(opts.vaultDir)}，共 ${pages.length} 页。写入前先搜索，规范见 [[_guide]]`
+  const header = `记忆库：${oneLine(opts.vaultDir)}，共 ${pages.length} 页。写入前先搜索，规范见 [[_guide]]${opts.feedbackOpen ? `；有 ${opts.feedbackOpen} 条反馈待处理` : ''}`
   const rows = ordered.map(r => `- [[${r.id}]] — ${oneLine(r.meta.summary)}${r.meta.status === 'stale' ? '（可能过时）' : ''}`)
   const footer = `inbox 未整理条目：${opts.inboxCount}${opts.inboxCount > 0 ? '，需要整理' : ''}`
   const bytes = (text: string) => Buffer.byteLength(text, 'utf8')

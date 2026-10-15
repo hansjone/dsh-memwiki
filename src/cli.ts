@@ -30,6 +30,10 @@ const HELP = `dsh-memwiki — 多个 AI 共用的记忆 wiki
   dsh-memwiki search <query> [--dir ...]
   dsh-memwiki read <page> [--dir ...]
   dsh-memwiki lint [--fix] [--dir ...]
+  dsh-memwiki merge <from>... --into <page> --rev <rev> --reason <说明> [--body-file <md>] [--meta-file <json>]
+  dsh-memwiki verify <page> [--note <说明>]
+  dsh-memwiki usage [--days 7]
+  dsh-memwiki feedback list [--all]
   dsh-memwiki reindex [--dir ...]
   dsh-memwiki sync [--dir ...]
   dsh-memwiki setup <claude|codex|cursor|dsh> [--write] [--dir ...]
@@ -255,6 +259,14 @@ async function main() {
         scope: { type: 'string' },
         purpose: { type: 'string' },
         limit: { type: 'string' },
+        into: { type: 'string' },
+        rev: { type: 'string' },
+        reason: { type: 'string' },
+        note: { type: 'string' },
+        days: { type: 'string' },
+        'body-file': { type: 'string' },
+        'meta-file': { type: 'string' },
+        all: { type: 'boolean', default: false },
         fix: { type: 'boolean', default: false },
         write: { type: 'boolean', default: false },
         git: { type: 'boolean', default: true },
@@ -350,8 +362,23 @@ async function main() {
       } else if (cmd === 'lint') {
         const { issues, fixed } = await wiki.lint({ fix: !!values.fix, agent: wiki.config.agent })
         if (values.fix) console.log(`已修复 ${fixed} 项`)
-        for (const i of issues) console.log(`[${i.code}]${i.page ? ' ' + i.page : ''} ${i.message}`)
+        for (const i of issues) console.log(`[${i.code}]${i.severity ? `（${i.severity === 'info' ? '提示' : '警告'}）` : ''}${i.page ? ' ' + i.page : ''} ${i.message}`)
         if (!issues.length) console.log('体检通过')
+      } else if (cmd === 'merge') {
+        if (!positionals[1] || !values.into || !values.rev || !values.reason) throw new Error('用法：merge <from>... --into <page> --rev <rev> --reason <说明> [--body-file <md>] [--meta-file <json>]')
+        const body = values['body-file'] ? await readFile(values['body-file'] as string, 'utf8') : undefined
+        const meta = values['meta-file'] ? JSON.parse(await readFile(values['meta-file'] as string, 'utf8')) : undefined
+        const { result } = await wiki.merge({ from: positionals.slice(1), into: values.into as string, rev: values.rev as string, body, meta, ctx: { agent: wiki.config.agent, reason: values.reason as string } })
+        console.log(`已合并到 [[${result.page.id}]]，rev：${result.page.rev}`)
+      } else if (cmd === 'verify') {
+        if (!positionals[1]) throw new Error('用法：verify <page> [--note <说明>]')
+        const { result } = await wiki.verify(positionals[1], { note: values.note as string | undefined, ctx: { agent: wiki.config.agent, reason: '核实内容' } })
+        console.log(`已核实 [[${result.page.id}]]：${result.page.meta.verified}`)
+      } else if (cmd === 'usage') {
+        console.log(JSON.stringify(await wiki.usage(values.days === undefined ? 7 : Number(values.days)), null, 2))
+      } else if (cmd === 'feedback') {
+        if (positionals[1] !== 'list') throw new Error('用法：feedback list [--all]')
+        console.log(JSON.stringify(wiki.feedbackList(!!values.all), null, 2))
       } else if (cmd === 'reindex') {
         await wiki.reindex()
         console.log('检索索引已重建')

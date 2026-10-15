@@ -78,7 +78,7 @@ test('MCP tools cover happy path and error codes', async t => {
   assert.match(remember.text, /inbox\//)
 
   const moved = await call(client, 'memwiki_move', { page: 'topics/mcp', to: 'topics/mcp-renamed', reason: '改名' })
-  assert.equal(moved.isError, false)
+  assert.equal(moved.isError, false, moved.text)
   assert.match(moved.text, /topics\/mcp-renamed/)
 
   const del = await call(client, 'memwiki_delete', { page: 'topics/mcp-renamed', reason: '删' })
@@ -129,4 +129,34 @@ test('MCP four secret tools protect metadata outputs, require purpose and redire
   assert.equal(deleted.isError, false)
   assert.ok(!deleted.text.includes(value))
   assert.match((await call(client, 'memwiki_secret_get', { name: 'test-admin', purpose: '确认删除' })).text, /NOT_FOUND/)
+})
+
+test('maintenance MCP tools and curate prompt are registered and work through transport', async t => {
+  const { client, wiki } = await connect(t)
+  const names = (await client.listTools()).tools.map(tool => tool.name)
+  for (const name of ['memwiki_merge', 'memwiki_verify', 'memwiki_feedback', 'memwiki_usage']) assert.ok(names.includes(name))
+  assert.equal(client.getServerVersion()?.version, '0.2.0')
+  const prompts = await client.listPrompts()
+  assert.ok(prompts.prompts.some(prompt => prompt.name === 'memwiki-curate'))
+  const prompt = await client.getPrompt({ name: 'memwiki-curate' })
+  const promptText = JSON.stringify(prompt.messages)
+  for (const phrase of ['纠正优先于补充', '只汇报不改代码', '删除内容前确认', '禁止改写 git 历史', 'memwiki_verify']) assert.ok(promptText.includes(phrase))
+  const create = (page: string) => call(client, 'memwiki_write', { page, mode: 'create', title: '重复主题', summary: '合并测试', body: '旧内容\n', reason: '初始化' })
+  assert.equal((await create('topics/a')).isError, false)
+  assert.match((await create('topics/b')).text, /SIMILAR_EXISTS/)
+  assert.equal((await call(client, 'memwiki_write', { page: 'topics/b', mode: 'create', title: '重复主题', summary: '合并测试', body: '独有内容\n', force: true, reason: '测试独立来源' })).isError, false)
+  const rev = (await wiki.read('topics/a')).page.rev
+  const merged = await call(client, 'memwiki_merge', { from: ['topics/b'], into: 'topics/a', rev, body: '当前正确且完整的说法\n', reason: '收敛' })
+  assert.equal(merged.isError, false, merged.text)
+  assert.equal((await wiki.read('topics/b')).page.meta.status, 'superseded')
+  assert.equal((await wiki.read('topics/a')).page.body, '当前正确且完整的说法\n')
+  assert.equal((await call(client, 'memwiki_verify', { page: 'topics/a', note: '核实依据' })).isError, false)
+  const feedback = await call(client, 'memwiki_feedback', { kind: 'rule', title: '规则边界', scenario: '测试场景', expected: '明确说明', actual: '暂未说明' })
+  assert.equal(feedback.isError, false)
+  const id = /feedback-[a-f0-9]{12}/u.exec(feedback.text)![0]
+  assert.match((await call(client, 'memwiki_feedback', { action: 'list' })).text, /规则边界/)
+  assert.equal((await call(client, 'memwiki_feedback', { action: 'resolve', id, resolution: '补充规范' })).isError, false)
+  assert.equal(wiki.feedbackList().length, 0)
+  await call(client, 'memwiki_search', { query: 'zzzz-unfindable' })
+  assert.match((await call(client, 'memwiki_usage', { days: 7 })).text, /SEARCH_ZERO/)
 })

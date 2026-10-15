@@ -55,6 +55,8 @@ dsh-memwiki install-skill
 | 精简上下文预算（字节） | `--budget` | `MEMWIKI_CONTEXT_BUDGET` | 4096 |
 | 过期天数 | — | 库 settings | 90 |
 | 敏感信息扫描 | — | 库 settings | 开启 |
+| 新建相似阈值 | — | 库 `settings.similarCreateThreshold` | 0.72 |
+| 正文重叠阈值 | — | 库 `settings.overlapThreshold` | 0.70 |
 
 `memwiki.json` 示例：
 
@@ -69,14 +71,18 @@ dsh-memwiki install-skill
 | `memwiki_context` | 精简目录（会话开始） |
 | `memwiki_search` | 全文检索 |
 | `memwiki_read` | 读页面（含 rev、反向链接、断链） |
-| `memwiki_write` | 写入（create/replace/append/edit/section/meta） |
+| `memwiki_write` | 写入（create/replace/append/edit/section/meta）；create 拦截相似页，可注明 reason 后 force |
 | `memwiki_remember` | 快速记入 inbox，并返回相关页面 |
 | `memwiki_move` | 改名/移动并改写链接 |
+| `memwiki_merge` | 合并到归属页，改写链接并保留旧页跳转；body/meta 可选，带目标 rev |
+| `memwiki_verify` | 核实后刷新 verified，stale 恢复 active，无需 rev |
+| `memwiki_feedback` | add/list/resolve：记录与处理按月反馈 |
+| `memwiki_usage` | 本地使用信号统计与零结果查询 Top 10 |
 | `memwiki_delete` / `memwiki_restore` | 回收站删除 / 恢复 |
-| `memwiki_lint` | 体检（可 `--fix`） |
+| `memwiki_lint` | 体检（可 `fix`）；含 overlap、fact_repeat、feedback_open，三项不可自动修 |
 | `memwiki_log` | 最近变更 |
 
-Prompts：`memwiki-ingest`（整理 inbox）、`memwiki-lint`（体检修复）。
+Prompts：`memwiki-ingest`（整理 inbox）、`memwiki-lint`（体检修复）、`memwiki-curate`（内容收敛、核实、归档及反馈/使用信号汇总，只汇报不改代码）。规则正文唯一来源是库内 `_guide`；skill 与服务说明只保留摘要。
 
 ## 命令行
 
@@ -87,6 +93,10 @@ dsh-memwiki context [--project <名>]
 dsh-memwiki search <query>
 dsh-memwiki read <page>
 dsh-memwiki lint [--fix]
+dsh-memwiki merge <from>... --into <page> --rev <rev> --reason <说明> [--body-file <md>] [--meta-file <json>]
+dsh-memwiki verify <page> [--note <说明>]
+dsh-memwiki usage [--days 7]
+dsh-memwiki feedback list [--all]
 dsh-memwiki reindex
 dsh-memwiki sync
 dsh-memwiki setup <claude|codex|cursor|dsh> [--write]
@@ -102,6 +112,12 @@ dsh-memwiki install-skill [--target ...]
 ## 常见问题
 
 **CONFLICT**：别人或另一个进程改过页面。重新 `memwiki_read` 拿最新 `rev` 再写。
+
+**SIMILAR_EXISTS**：先读最多 3 个相似候选，优先更新已有页；确实不同主题才 `force: true`，reason 必须说明理由并原样记日志。inbox 不拦截。
+
+**内容维护**：一个事实一个归属，纠正优先于补充。merge 的正文由调用方整理；删除源内容前确认已在目标页，旧页保留 superseded 跳转，原文在 git 历史中。fact_repeat 仅为低级别提示，链接引用 IP 不必删。
+
+**反馈与统计**：反馈在 `meta/feedback/YYYY-MM.md`（type=meta）；context 只提示 open 条数。使用信号在 git 忽略的 `.memwiki/usage.jsonl`，超过 1 MB 轮转一份旧文件；只记事件、脱敏查询及哈希页面标识，不记录正文、写入理由或凭据值。
 
 **SECRET_DETECTED**：正文或页头命中密钥规则，不会写入。确需保存低风险凭据时用 `memwiki_secret_set`，页面写 `secret:<名字>` 引用。
 

@@ -14,7 +14,7 @@ async function fixture(t: Parameters<typeof temporary>[0]) {
   const dir = await temporary(t)
   await initVault(dir, { git: false })
   const store = new Store(config(dir))
-  const create = (id: string, body = 'body\n', meta: MetaPatch = {}) => store.write({ kind: 'create', id, meta: { ...meta, title: meta.title ?? id.split('/').at(-1)!, summary: meta.summary ?? '摘要' }, body }, ctx)
+  const create = (id: string, body = 'body\n', meta: MetaPatch = {}, force = false) => store.write({ kind: 'create', id, meta: { ...meta, title: meta.title ?? id.split('/').at(-1)!, summary: meta.summary ?? '摘要' }, body, force }, ctx)
   return { dir, store, create }
 }
 
@@ -148,7 +148,8 @@ test('list excludes special/internal files, resolve honors tiers, cache refreshe
   const { store, create, dir } = await fixture(t)
   await create('topics/A', 'body', { title: 'Same', aliases: ['Alias'] })
   await create('rules/A', 'body', { title: 'Other', aliases: ['Same'] })
-  await create('topics/B', 'body', { title: 'Other', aliases: ['shared'] })
+  // Deliberately duplicate a title to exercise resolver ambiguity despite the create guard.
+  await create('topics/B', 'body', { title: 'Other', aliases: ['shared'] }, true)
   await create('topics/C', 'body', { aliases: ['shared'] })
   for (const rel of ['index.md', 'log.md', 'topics/_private.md', '.trash/x.md', '.memwiki/x.md', '.obsidian/x.md', '.git/x.md', 'node_modules/x.md']) {
     await mkdir(path.dirname(path.join(dir, rel)), { recursive: true })

@@ -28,9 +28,10 @@
   howto/            操作手册
   decisions/        决策记录
   reference/        外部资源指针（链接、面板、工单）
+  meta/feedback/    工具与规则反馈，按月一个 YYYY-MM.md（type: meta）
   inbox/            快速记录，按月一个文件 inbox/YYYY-MM.md，定期整理进正式页面
   .trash/           回收站（删除的页面，保留原相对路径 + 时间戳后缀）
-  .memwiki/         本地缓存与锁（git 忽略）
+  .memwiki/         本地缓存、锁与 usage.jsonl 使用信号（git 忽略）
 ```
 
 - 目录是约定，不是强制：任何 `.md` 文件都是页面。`.trash/`、`.memwiki/`、`.obsidian/`、`.git/` 以及 `node_modules/` 不扫描。
@@ -70,7 +71,7 @@ project: myapp
 |---|---|---|
 | `title` | 是 | 页面标题 |
 | `summary` | 是 | 一行摘要（≤120 字），会进目录，必须独立可读 |
-| `type` | 是 | `user` `rule` `project` `topic` `howto` `decision` `reference` `inbox` |
+| `type` | 是 | `user` `rule` `project` `topic` `howto` `decision` `reference` `inbox` `meta` |
 | `tags` | 否 | 标签数组 |
 | `aliases` | 否 | 别名数组（也用于 `[[别名]]` 解析） |
 | `status` | 是 | `active`（默认）`draft` `stale` `superseded` |
@@ -86,7 +87,7 @@ project: myapp
 
 ### 3.3 版本号（rev）
 
-`rev` = 文件原始字节的 SHA-256 前 12 位十六进制。`read` 返回 rev；除 `create` 和 `append` 外，所有修改都必须带读取时的 rev，不一致返回 `CONFLICT`（附当前 rev），调用方需重新读取后再改。
+`rev` = 文件原始字节的 SHA-256 前 12 位十六进制。`read` 返回 rev；普通写入除 `create` 和 `append` 外必须带 rev，不一致返回 `CONFLICT`（附当前 rev），调用方重新读取后再改。merge 校验目标 rev；verify 只改核实字段、内部加锁而无需 rev；feedback 的追加/解决在内部取锁并读取当前版本。
 
 ### 3.4 链接
 
@@ -109,6 +110,14 @@ project: myapp
 | `meta` | 是 | 只改页头字段（合并，`null` 表示删除该字段） |
 
 每次写入都带 `WriteContext { agent, reason, source? }`：`agent` 写进 `updated_by`，`reason` 进 `log.md` 和 git 提交信息，`source` 追加进 `sources`（去重）。
+
+#### 新建相似页拦截（0.2.0）
+
+create 在结构锁和页面锁内读取最新页面集合，准备并校验新内容后、落盘前检查相似页。inbox、meta、特殊页和 superseded 不参与；remember 保持直接写 inbox，不拦截。force 仍执行 ID/元数据/敏感扫描等全部校验。
+
+比较使用标题、摘要和正文前 2000 个字符，不依赖模型或词库。NFKC、转小写、只保留字母数字后：标题二元组 Jaccard 为 T，摘要二元组 Jaccard 为 S；正文去双链、Markdown 链接及标题行后，双方各至少 40 字，按五字符 shingle Jaccard 得 B，否则 B=0。相似度是 `max(0.8T+0.2S, 0.9B, 0.45(0.8T+0.2S)+0.55B)`，范围 [0,1]。这是可解释的字符重叠机制，并不判断语义真伪。
+
+分数达到 `similarCreateThreshold` 且大于 0 时返回 `SIMILAR_EXISTS`，details.candidates 最多 3 条，按分数排序，每条含 id/title/summary/similarity。提示“更新已有页面；确实是不同主题时带 force 并写明理由”。`force: true` 只跳过相似检查，必须有非空 reason，原文进日志；拦截和后续强制创建分别记使用信号。
 
 ### 4.2 写入流程（每次写入都是这些步骤）
 
@@ -135,6 +144,14 @@ project: myapp
 ### 4.5 删除与回收站
 
 `delete` 把文件移到 `.trash/<原路径>.<时间戳>.md`，同时扫描反向链接，在结果里返回"这些页面还链接着它"。`restore` 从回收站恢复（原 ID 被占用时报 `EXISTS`）。没有永久删除接口。
+
+### 4.6 合并与核实
+
+- `merge({ from: string[], into, body?, meta?, rev, ctx })`：调用方先核对归属，把整合后的正文放 body；省略则保留目标正文。必须先确认被删除的独有信息已在归属页存在。
+- 合并持有结构锁和按 ID 排序的页面锁，先解析所有引用、校验非空/不重复的 from、不包含 into、页面存在、目标 rev 一致且目标不为 superseded；准备所有输出并完成元数据/敏感扫描后才开始写。校验失败时页面、目录、日志和 git 均不变。与已有 move 相同，跨文件 I/O 故障不是文件系统事务，不承诺断电回滚。
+- 源文件保留，不进回收站：status=superseded、superseded_by=目标 ID，正文仅“已合并到 [[目标ID]]”。为让旧标题/别名可唯一定位归属页，源页标题变为“已合并：源ID”、摘要改为跳转说明、aliases 清空；源页旧标题及别名并入目标 aliases（大小写不敏感去重）。旧 ID 仍可直接读跳转页，原内容由 git 历史保留。
+- 全库正文中指向源 ID、标题、别名的双链复用 move 的 rewriteLinks 改写为目标 ID，保留显示文字、标题和空白，不碰代码内示例。目标的新正文也改写。一次 afterMutation 生成目录、一条日志、一次 git 提交：`[<agent>] merge A, B -> C：<reason>`。
+- `verify(ref, { note?, ctx })`：解析页面后取页面锁并重新读取，仅把 verified 设为本地今天，status=stale 时恢复 active；不改正文、updated、updated_by、sources 等字段，无需 rev。独立日志/提交的 reason 用 note（没有则 ctx.reason）。**AI 读到并核实过就调用 verify**；不能核实则保持 stale 并标待核实。过时判断继续使用 verified ?? updated。
 
 ## 5. 检索
 
@@ -164,17 +181,17 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 
 ### 6.1 `index.md`（给人看的总目录）
 
-按顶层目录分组（固定顺序：user、rules、projects 按项目再分组、topics、howto、decisions、reference，其他目录按字母序，inbox 最后只显示条目数），每页一行：`- [[id|title]] — summary`，状态非 active 的在行尾标注。顶部显示页数统计和生成时间。内容不变时不重写文件（避免无意义的 git 改动）。
+按顶层目录分组（固定顺序：user、rules、projects 按项目再分组、topics、howto、decisions、reference、meta，其他目录按字母序，inbox 最后只显示条目数），每页一行：`- [[id|title]] — summary`，状态非 active 的在行尾标注。顶部显示页数统计和生成时间。内容不变时不重写文件（避免无意义的 git 改动）。
 
 ### 6.2 精简上下文（会话开始注入给 AI）
 
 `buildContext({ project, budgetBytes })`，默认预算 4096 字节（UTF-8），按顺序填充，超出预算就停并提示剩余页数：
 
-1. 一行说明：库位置、页数、"写入前先搜索，规范见 [[_guide]]"。
+1. 一行说明：库位置、页数、"写入前先搜索，规范见 [[_guide]]"；有 open 反馈时加“有 N 条反馈待处理”（优先于目录条目保留）。
 2. `pinned` 页面。
 3. `type: rule` 和 `type: user` 的页面。
 4. 当前项目的页面（按 `updated` 新到旧）。
-5. 其他页面按 `updated` 新到旧（inbox 页面不逐条列出）。
+5. 其他页面按 `updated` 新到旧（inbox 和 meta/feedback 页面不逐条列出；superseded 不进精简上下文）。
 6. inbox 未整理条目数（>0 时提示需要整理）。
 
 每行格式：`- [[id]] — summary`（`stale` 加"（可能过时）"）。
@@ -194,8 +211,13 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 | `inbox_backlog` | inbox 条目超过 20 条或最早一条超过 14 天 | 否 |
 | `secret_suspect` | 已有内容命中敏感信息规则（外部编辑带进来的） | 否 |
 | `uncommitted` | 库里有未提交的改动 | 提交 |
+| `overlap` | 非特殊正式页正文五字符 shingle Jaccard 达 overlapThreshold，双方至少 40 字；忽略双链/Markdown 链接与标题行 | 否 |
+| `fact_repeat` | 同一关键事实 token 出现于 ≥3 页，提醒确认唯一归属、其他页改链接 | 否 |
+| `feedback_open` | open 反馈 >0 时只报一条汇总 | 否 |
 
 输出结构化问题列表（页面、问题、说明、是否可修），`fix: true` 时只做"可自动修"列里的修复，并作为一次 `[<agent>] lint` 提交。
+
+内容检查不包含 inbox、meta、superseded、`_guide` 等特殊页。原 LintIssue 字段保持不变，新增可选 severity/pages/similarity/token：overlap 为 warning，最多 20 对；fact_repeat 为 info，按 token 聚合、按涉及页数降序最多 10 条，消息最多展示 10 页（结构化 pages 保留全部）。关键事实规则表在 `search/facts.ts`：合法 IPv4、两至三段数字版本（v 前缀可带四段）、Windows 绝对路径（斜线统一且大小写归一）、Unix 绝对路径、1–65535 的冒号端口；忽略普通 URL 和时钟时间。每页每 token 只计一次；疑似凭据页不输出 token。仅链接里引用 IP 不会触发 overlap；fact_repeat 可以提示，调用方须判断是否合理引用。
 
 ## 7. 配置
 
@@ -210,8 +232,12 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 | 精简上下文预算（字节） | `--budget` | `MEMWIKI_CONTEXT_BUDGET` | 4096 |
 | 过期天数 | — | — | 90 |
 | 敏感信息扫描 | — | — | 开启 |
+| 新建相似阈值 `similarCreateThreshold` | — | — | 0.72 |
+| 正文重叠阈值 `overlapThreshold` | — | — | 0.70 |
 
 `memwiki.json`：
+
+两个相似阈值均为库 `settings` 中的 [0,1] 有限数值；省略时机制使用表内默认值。提高阈值可减少拦截，阈值 1 只匹配满分，不把零分视为命中。
 
 ```json
 { "schemaVersion": 1, "name": "我的记忆库", "created": "2026-10-14", "settings": { "staleDays": 90, "contextBudget": 4096, "autoPush": false } }
@@ -233,12 +259,16 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 | `memwiki_write` | 写入（§4.1），参数 `page`、`mode`、`rev?`、`body?`/`text?`/`old?`/`new?`/`heading?`/`meta?`、`reason`、`source?` |
 | `memwiki_remember` | 快速记录：追加到 `inbox/YYYY-MM.md`，同时返回最相关的 3 个已有页面，提示调用方考虑直接更新它们 |
 | `memwiki_move` | 改名/移动并改写链接 |
+| `memwiki_merge` | 参数 from[]、into、rev、body?、meta?、reason；合并并保留源页跳转，见 §4.6 |
+| `memwiki_verify` | 参数 page、note?；核实日期，stale 恢复 active，无需 rev |
+| `memwiki_feedback` | action=add（默认，kind/title/scenario/expected/actual）、list（all?）、resolve（id/resolution），见 §13 |
+| `memwiki_usage` | days? 默认 7，返回各事件次数与零结果查询 Top 10 |
 | `memwiki_delete` / `memwiki_restore` | 删除到回收站 / 从回收站恢复 |
 | `memwiki_lint` | 体检，参数 `fix?` |
 | `memwiki_log` | 最近的变更，参数 `limit?` |
 
-- 服务端 `instructions`（DSH 会注入系统提示）：短规则——任务开始调用 `memwiki_context`；写入前先 `memwiki_search`；更新已有页面优于新建；一个事实一个归属；不写密钥；读到旧内容先核实。不超过 1.5 KB。
-- MCP prompts：`memwiki-ingest`（把 inbox 整理进正式页面的工作流）、`memwiki-lint`（体检并修复）。
+- 服务端 `instructions`（DSH 会注入系统提示）仅保留核心摘要，不超过 1.5 KB；细则见 `_guide`，工具不好用时用 memwiki_feedback 记下。memwiki_write 新增可选 force（仅 create 使用），reason 必填。
+- MCP prompts：`memwiki-ingest`、兼容保留 `memwiki-lint`，新增 `memwiki-curate`：lint → 判断 overlap/fact_repeat 归属并 merge/edit → stale 核实后 verify、否则标待核实 → inbox 归档 → open 反馈和 usage 汇总（只汇报不改代码）→ 再次 lint。纠正优先于补充，只写当前正确说法，删除前确认已在归属页存在，不改写 git 历史。
 - 写入方 ID 来自配置（`MEMWIKI_AGENT`），每个客户端配置各自的值。
 - 工具返回中文为主的纯文本（便于模型阅读），错误返回 `isError` 并带错误码。
 
@@ -251,6 +281,10 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 | `context [--project <名>]` | 打印精简上下文；供 SessionStart hook 使用。`--project` 缺省时取当前目录所在 git 根目录名 |
 | `search <query>` / `read <page>` | 调试用 |
 | `lint [--fix]` | 体检 |
+| `merge <from>... --into <page> --rev <rev> --reason <说明> [--body-file <md>] [--meta-file <json>]` | 一次合并，正文/元数据可从文件读入 |
+| `verify <page> [--note <说明>]` | 核实后刷新日期 |
+| `usage [--days 7]` | 汇总本地事件次数及零结果查询 Top 10 |
+| `feedback list [--all]` | 默认只列 open 反馈，all 包含已解决 |
 | `reindex` | 重建检索缓存 |
 | `sync` | 与远程仓库同步（§4.4 多机同步） |
 | `setup <client>` | 打印（`--write` 时写入）对应客户端的 MCP + hook 配置：`claude` `codex` `cursor` `dsh` |
@@ -319,3 +353,18 @@ T2 不依赖 T1 的实现：只用 `types.ts` 里的 `PageRecord`（已解析好
 - 状态/体检直接读 Store、manifest、links、log、git 和 lintRecords；不调用会写索引/启动监视器的 Memwiki.open，不修复、不提交、不推送。
 - client `src/client/index.ts` → `lib/client.js`，`dsh.client` 与 `exports["./client"]` 注册浏览器半。按 trilium 兼容规则只硬注入 slots + locale，注册 settings.section（id=memwiki，与 host 命名空间分开），不用 settings.plugin.item / dsh-client-runtime / settingsScope；挂载失败仅记录固定诊断，避免 GUI 崩溃。
 - 卡片沿用 trilium 的 DSH CSS 变量、输入框和按钮风格，桌面布局，中文；密码输入仅用于写入并在提交时清空，凭据列表只含元数据。用户主动查看后在该行以等宽字体显示明文，同一时间只显示一条；隐藏会移除状态中的值并使未完成的查看请求失效。
+
+## 13. 反馈与使用信号（0.2.0）
+
+- `feedback({ kind: bug|friction|missing|rule, title, scenario, expected, actual, ctx })` 写到 `meta/feedback/YYYY-MM.md`（type=meta）。每条有随机 12 位十六进制短 ID（feedback- 前缀）、本地日期、agent、kind、标题、状态 open，正文分别列场景、期望、实际。追加与 resolve 在跨进程反馈锁内完成，普通存储层仍做敏感扫描，反馈不能包含凭据值或保留的条目标记。
+- `feedbackResolve(id, resolution, ctx)` 只替换对应条目的状态为“已解决：<resolution>”（非空单行）；找不到或多条同 ID 报错。不删反馈历史。MCP 合并到 memwiki_feedback action=resolve，list 默认 open，all 含已解决。meta 进入 index 分组；context 不逐页列反馈，只显示待处理数量。
+- 门面捕获搜索零结果 SEARCH_ZERO、CONFLICT、SECRET_DETECTED、EDIT_NOT_FOUND、AMBIGUOUS_EDIT、SIMILAR_EXISTS，以及成功强制新建 FORCE_CREATE。MCP/CLI 共用这条路径；不对凭据工具取用记录 usage。SECRET_DETECTED 仅记录扫描规则类别，绝不保存匹配内容、错误文本或写入输入。
+- 使用信号为 `<vault>/.memwiki/usage.jsonl`，模板 gitignore 已忽略 `.memwiki/`。字段限于 UTC 时间、agent、事件、查询（仅 SEARCH_ZERO，最长 500 字符，疑似凭据整条脱敏）、页面 ID 的 SHA-256 前 12 位哈希、敏感扫描规则名。SIMILAR_EXISTS 与后续 FORCE_CREATE 通过同一 pageKey 关联；没有 FORCE_CREATE 记录代表未观察到成功强制创建。绝不记录页面正文、写入 reason/source、查询之外的用户内容、凭据值。
+- 写入在独立锁内排队追加；下一行使文件超过 1 MiB 时将当前文件轮转为 usage.jsonl.1，覆盖旧备份，只保留一代。close 和 usage 汇总会等待本进程队列清空；统计读取两代文件，按 days 过滤，忽略损坏行。日志失败只发固定警告，不改变业务返回，不回显内容。
+- `usage [--days 7]` / memwiki_usage 输出各事件次数与零结果查询 Top 10（次数降序）；usage 仅是工具改进线索，不能自动据此改代码。
+
+## 14. 规则的唯一正文
+
+`templates/vault/_guide.md` 是新库规范正文的唯一模板；运行时规则住在库内 `_guide`，AI 任务开始若没读过就读取它。回忆、写入、凭据取用四步、禁止项、维护与反馈细则全部在这里。`skills/memwiki/SKILL.md` 约 30 行，仅触发条件、核心五条和凭据/历史禁改摘要；MCP INSTRUCTIONS 同样摘要并指向 `_guide`。规则修改不用重装 skill，已有库不被代码升级静默覆盖。
+
+核心约定：一个事实一个归属；纠正优先于补充，发现旧说法不对直接改旧页；页面只写当前正确的说法；整页重复或被替代用 merge；读到并核实过就 verify；遇到可复现工具问题、规则不清或反复搜索缺口用 feedback，一次普通零结果、可通过正常重读解决的冲突不用记录反馈。整理时先确认信息已在归属页再删源内容，禁止改写 git 历史。工具行为与代码改进只汇报，由另行确认的实现任务处理。

@@ -3,6 +3,7 @@ import path from 'node:path'
 import type {
   DeleteResult, LintIssue, LogEntry, MemwikiConfig, MoveResult, Page, PageRecord,
   SearchHit, SearchQuery, WriteContext, WriteOp, WriteResult,
+  MergeOp, MergeResult, FeedbackInput,
 } from './types.ts'
 import { MemwikiError } from './types.ts'
 import { Store } from './core/store.ts'
@@ -17,6 +18,11 @@ import { createSearchEngine } from './search/engine.ts'
 import { buildContext, buildIndexMd } from './search/catalog.ts'
 import { fixFor, lintRecords } from './search/lint.ts'
 import { watchVault } from './watch.ts'
+import { appendUsage, usageSummary, USAGE_EVENTS } from './core/usage.ts'
+import type { UsageEvent } from './core/usage.ts'
+import { feedbackBlock, feedbackEntries, resolveFeedbackBody } from './core/feedback.ts'
+import { withLock } from './core/lock.ts'
+import { localDate } from './core/page.ts'
 
 const INBOX_LINE = /^- (\d{4}-\d{2}-\d{2})/u
 
@@ -52,6 +58,24 @@ export class Memwiki {
   private watcher?: ReturnType<typeof watchVault>
   private pushTimer?: ReturnType<typeof setTimeout>
   private closed = false
+  private usagePending: Promise<void> = Promise.resolve()
+
+  private signal(event: UsageEvent, agent: string, extra: { query?: string; page?: string; rules?: string[] } = {}): Promise<void> {
+    this.usagePending = this.usagePending.then(() => appendUsage(this.config.dir, { event, agent, ...extra }))
+      .catch(() => { console.warn('[memwiki] 使用信号写入失败') })
+    return this.usagePending
+  }
+
+  private async observed<T>(agent: string, page: string | undefined, fn: () => Promise<T>): Promise<T> {
+    try { return await fn() }
+    catch (e) {
+      if (e instanceof MemwikiError && USAGE_EVENTS.includes(e.code as UsageEvent)) {
+        const findings = e.details?.findings as { rule: string }[] | undefined
+        await this.signal(e.code as UsageEvent, agent, { page, rules: findings?.map(f => f.rule) })
+      }
+      throw e
+    }
+  }
 
   private constructor(config: MemwikiConfig) {
     this.config = { ...config, dir: path.resolve(config.dir), git: { autoCommit: config.git.autoCommit, autoPush: config.git.autoPush ?? false } }
@@ -268,12 +292,15 @@ export class Memwiki {
       budgetBytes: this.config.contextBudget,
       vaultDir: this.config.dir,
       inboxCount: this.countInbox(),
+      feedbackOpen: this.feedbackList().length,
     })
   }
 
   /** Full-text search over indexed pages (§5). */
   search(q: SearchQuery): SearchHit[] {
-    return this.engine.search(q)
+    const hits = this.engine.search(q)
+    if (!hits.length) void this.signal('SEARCH_ZERO', this.config.agent, { query: q.query })
+    return hits
   }
 
   /** Reads a page by ID / title / alias, including backlinks and broken links. */
@@ -299,7 +326,8 @@ export class Memwiki {
 
   /** Applies a write op, then refreshes search / index / log / git. */
   async write(op: WriteOp, ctx: WriteContext): Promise<MutationResult<WriteResult>> {
-    const result = await this.store.write(op, ctx)
+    const result = await this.observed(ctx.agent, op.id, () => this.store.write(op, ctx))
+    if (op.kind === 'create' && op.force) await this.signal('FORCE_CREATE', ctx.agent, { page: op.id })
     const action = op.kind === 'create' ? '新建' : '更新'
     const commitSha = await this.afterMutation({
       changedPaths: result.changedPaths,
@@ -312,8 +340,68 @@ export class Memwiki {
     return { result, commitSha }
   }
 
+  /** Consolidates source pages into an owner with one catalog/log/git mutation. */
+  async merge(op: MergeOp): Promise<MutationResult<MergeResult>> {
+    const result = await this.observed(op.ctx.agent, op.into, () => this.store.merge(op))
+    const commitSha = await this.afterMutation({ changedPaths: result.changedPaths, pages: result.pages,
+      action: 'merge', page: `${result.from.join(', ')} -> ${result.page.id}`, reason: op.ctx.reason, agent: op.ctx.agent })
+    return { result, commitSha }
+  }
+
+  /** Records successful verification without requiring a revision or changing body/provenance. */
+  async verify(ref: string, opts: { note?: string; ctx: WriteContext }): Promise<MutationResult<WriteResult>> {
+    const result = await this.observed(opts.ctx.agent, ref, () => this.store.verify(ref))
+    const commitSha = await this.afterMutation({ changedPaths: result.changedPaths, pages: [result.page],
+      action: 'verify', page: result.page.id, reason: opts.note ?? opts.ctx.reason, agent: opts.ctx.agent })
+    return { result, commitSha }
+  }
+
+  /** Lists indexed feedback entries; default includes only open items. */
+  feedbackList(all = false) { return feedbackEntries(this.recordList(), all) }
+
+  /** Appends a monthly feedback entry; sensitive content is rejected by the normal scanner. */
+  async feedback(input: FeedbackInput) {
+    const block = feedbackBlock(input)
+    const id = `meta/feedback/${localDate().slice(0, 7)}`
+    return this.observed(input.ctx.agent, id, () => withLock(this.config.dir, ':feedback', async () => {
+      let exists = true
+      try { await this.store.get(id) }
+      catch (e) { if (!(e instanceof MemwikiError && e.code === 'NOT_FOUND')) throw e; exists = false }
+      const result = await this.store.write(exists ? { kind: 'append', id, text: block.text } : {
+        kind: 'create', id, meta: { title: `工具反馈 ${localDate().slice(0, 7)}`, summary: '工具与规则反馈，按条目跟踪处理状态', type: 'meta' }, body: block.text,
+      }, input.ctx)
+      const commitSha = await this.afterMutation({ changedPaths: result.changedPaths, pages: [result.page], action: 'feedback',
+        page: id, reason: input.ctx.reason, agent: input.ctx.agent })
+      return { id: block.id, page: result.page, commitSha }
+    }))
+  }
+
+  /** Resolves exactly one feedback ID under a cross-process feedback lock. */
+  async feedbackResolve(id: string, resolution: string, ctx: WriteContext) {
+    return this.observed(ctx.agent, undefined, () => withLock(this.config.dir, ':feedback', async () => {
+      const entries = feedbackEntries(await this.store.list(), true).filter(entry => entry.id === id)
+      if (!entries.length) throw new MemwikiError('NOT_FOUND', '反馈不存在')
+      if (entries.length !== 1) throw new MemwikiError('AMBIGUOUS', '反馈 ID 不唯一')
+      const page = await this.store.get(entries[0].page)
+      const result = await this.store.write({ kind: 'replace', id: page.id, rev: page.rev, body: resolveFeedbackBody(page.body, id, resolution) }, ctx)
+      const commitSha = await this.afterMutation({ changedPaths: result.changedPaths, pages: [result.page], action: 'feedback_resolve',
+        page: page.id, reason: resolution, agent: ctx.agent })
+      return { result, commitSha }
+    }))
+  }
+
+  /** Waits for pending signals and returns bounded event/query statistics. */
+  async usage(days = 7) {
+    await this.usagePending
+    return usageSummary(this.config.dir, days)
+  }
+
   /** Quick capture into monthly inbox; returns the three most related pages. */
   async remember(text: string, opts: { agent: string; source?: string; project?: string }): Promise<RememberResult> {
+    return this.observed(opts.agent, undefined, () => this.rememberImpl(text, opts))
+  }
+
+  private async rememberImpl(text: string, opts: { agent: string; source?: string; project?: string }): Promise<RememberResult> {
     const now = new Date()
     const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
     const id = `inbox/${ym}`
@@ -346,7 +434,7 @@ export class Memwiki {
   }
 
   async move(ref: string, toId: string, ctx: WriteContext): Promise<MutationResult<MoveResult>> {
-    const result = await this.store.move(ref, toId, ctx)
+    const result = await this.observed(ctx.agent, toId, () => this.store.move(ref, toId, ctx))
     const pages = [result.page]
     for (const id of result.rewritten) {
       if (id.toLowerCase() === result.page.id.toLowerCase()) continue
@@ -381,7 +469,7 @@ export class Memwiki {
   }
 
   async restore(trashPath: string, ctx: WriteContext): Promise<MutationResult<WriteResult>> {
-    const result = await this.store.restore(trashPath, ctx)
+    const result = await this.observed(ctx.agent, undefined, () => this.store.restore(trashPath, ctx))
     const commitSha = await this.afterMutation({
       changedPaths: result.changedPaths,
       pages: [result.page],
@@ -398,6 +486,7 @@ export class Memwiki {
     const agent = opts.agent ?? this.config.agent
     const issues = lintRecords(this.recordList(), {
       staleDays: this.config.staleDays,
+      overlapThreshold: this.config.overlapThreshold,
       now: new Date(),
       inboxEntries: this.inboxEntries(),
       scanSecrets: this.config.secretScan ? scanSecrets : undefined,
@@ -427,7 +516,7 @@ export class Memwiki {
       if (!patch) continue
       try {
         const page = await this.store.get(issue.page)
-        const written = await this.store.write({ kind: 'meta', id: page.id, rev: page.rev, meta: patch }, { agent, reason: 'lint 自动修复' })
+        const written = await this.observed(agent, page.id, () => this.store.write({ kind: 'meta', id: page.id, rev: page.rev, meta: patch }, { agent, reason: 'lint 自动修复' }))
         pages.push(written.page)
         for (const p of written.changedPaths) changedPaths.add(p)
         fixed++
@@ -457,6 +546,7 @@ export class Memwiki {
     }
     const refreshed = lintRecords(this.recordList(), {
       staleDays: this.config.staleDays,
+      overlapThreshold: this.config.overlapThreshold,
       now: new Date(),
       inboxEntries: this.inboxEntries(),
       scanSecrets: this.config.secretScan ? scanSecrets : undefined,
@@ -495,6 +585,7 @@ export class Memwiki {
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
+    await this.usagePending
     if (this.pushTimer) clearTimeout(this.pushTimer)
     this.watcher?.close()
   }

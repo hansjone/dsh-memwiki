@@ -37,7 +37,7 @@ export async function initVault(dir: string, opts: { name?: string; git: boolean
     if ((e as NodeJS.ErrnoException).code === 'EEXIST') throw new MemwikiError('EXISTS', '记忆库已经存在')
     throw e
   }
-  for (const rel of ['user', 'rules', 'projects', 'topics', 'howto', 'decisions', 'reference', 'inbox', '.trash', '.memwiki/locks']) {
+  for (const rel of ['user', 'rules', 'projects', 'topics', 'howto', 'decisions', 'reference', 'meta/feedback', 'inbox', '.trash', '.memwiki/locks']) {
     await mkdir(safeResolve(root, rel), { recursive: true })
   }
   const templates = new URL('../../templates/vault/', import.meta.url)

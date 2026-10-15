@@ -44,10 +44,13 @@ pinned: true
 
 ## 5. 怎么更新
 
-- 发现内容过时：能改就直接改正，并更新 `verified`；不能马上确认的，把 `status` 改成 `stale`。
-- 被新页面取代：`status: superseded` + `superseded_by: <新页面>`，不要直接删。
-- 发现两处说法矛盾：以较新、有依据的为准，改掉旧的，在 `log` 的 reason 里说明。
-- 读到较早记录的内容（目录或读取结果会提示多少天前），如果涉及代码、配置、文件路径，**先核实再用**。
+- **纠正优先于补充，页面只写当前正确的说法。** 发现旧说法不对，直接改旧页面，不另建一页与错误说法并存。历史依据留在 git，不在正文堆“以前……后来……”。
+- 改一节用 `memwiki_write mode=section`（正文不重复写标题）；改一句用 `edit` 的 `old/new`；`old` 必须恰好出现一次。补充独立内容才用 `append`，整页重写用 `replace`（可同时用 `meta` 更新摘要）。
+- 先 `memwiki_read` 拿 rev；除 create/append 外写入都带 rev。遇到 `CONFLICT` 重新读取，在最新内容上再改，不能强行覆盖。每次写入写明 `reason`，有依据就写 `source`。
+- 新建返回 `SIMILAR_EXISTS` 时先读候选，优先更新它；确认是不同主题才用 `force: true`，`reason` 说明为何独立，理由原样留日志。不要为绕过拦截换标题或反复新建。
+- 两页重复或整页过时被另一页取代时用 `memwiki_merge`：先读各页，确认独有内容已在归属页；用 `body` 传整理好的正文、目标页 rev。源页保留为 superseded 跳转，旧链接自动改到归属页，旧名并入目标 aliases。不会自动替你判断什么事实正确。
+- 发现两处说法矛盾：以当前核实、有依据的为准，直接改掉旧说法，在 reason 说明依据，不能仅凭日期新就认定正确。
+- **读到并核实过就调用 `memwiki_verify`**，可用 note 说明核实依据；无需 rev，刷新本地核实日期，stale 会恢复 active。涉及代码、配置、路径的旧记录先核实再用；不能确认时保留 `status: stale` 并标“待核实”，不要调用 verify 假装核实过。
 
 ## 6. 工具
 
@@ -56,3 +59,27 @@ pinned: true
 没有工具可用、只能直接改文件时：保持页头格式不变，更新 `updated`、`updated_by`，然后用带写入方前缀的信息提交，比如 `git commit -m "[codex] 更新 topics/xxx：原因"`。
 
 - **禁止改写 git 历史**：不要 amend 或 rebase 已推送的提交，不要 force push，不要压缩（squash）历史，不要删除或重建 `.git`。服务器已禁止强制推送。memwiki 工具用不了时，只能直接改文件后做一次普通提交。
+
+## 7. 任务开始与回忆
+
+1. 调用 `memwiki_context`（会话开始已注入就跳过），看相关目录。任务开始若本会话没读过本规范，`memwiki_read _guide`。
+2. 有可能相关就 `memwiki_search`，用两三个中英文关键词。用户说“之前”“上次”时先搜，不凭印象说没记过。
+3. `memwiki_read` 读全文，核实涉及当前环境的内容。判断是否值得写入：换一个 AI、下周新开会话，没有它会不会做错事或多走弯路？会才记；拿不准归属先用 `memwiki_remember` 进 inbox。
+
+## 8. 凭据取用
+
+不要先向用户索要，依次完成：
+1. 搜服务名找 `secret:<名字>` 引用或“去哪里拿”的位置说明。
+2. `memwiki_secret_list` 核对名字与 scope；页内清单可能过时，以凭据库为准。
+3. `memwiki_secret_get` 写清具体 purpose，只按 scope 使用；不回显给用户，不写进任何文件、页面、提交或日志，用完不保留。
+4. 凭据库没有、页面也没写去哪拿，才问用户。用户明确要求记住低风险凭据时用 `memwiki_secret_set`，带 scope，页面只留引用。高风险凭据遵循第 2 节禁存规则。
+
+## 9. 整理与反馈
+
+- 用户要求整理记忆时用 `memwiki-curate`：跑 lint，核对 overlap / fact_repeat 的事实归属，以 merge/edit 收敛到一页，其余链接过去；stale 能核实就 verify，不能就标待核实；inbox 已归入正式页的条目才移除。删除前确认信息已在归属页存在。
+- overlap 是正文重叠警告；fact_repeat 是低级别提示，同一 IP、版本、路径或端口出现多页不一定有错，链接引用是正常的。不要机械批量删改。`fix: true` 只用于可安全自动修复的项，内容重复与反馈不能自动修。
+- 遇到工具 bug、反复失败/难用、缺失能力、规则不清，或多次换关键词仍搜不到本应存在的知识时，用 `memwiki_feedback` 写 kind、title、scenario、expected、actual，留下可复现场景；先 `action=list` 看有没有同一问题，避免重复反馈。
+- 一次普通零结果搜索、新主题本来没记过、按提示重读即可解决的一次正常冲突、瞬时网络问题，不必记反馈。不要把会话流水、用户私密原文或凭据塞进反馈；问题描述只保留定位所需内容。
+- 反馈在 `meta/feedback/YYYY-MM`，默认状态 open；确认已有修复或规则澄清后 `action=resolve`，给 id、resolution（如“v0.2.0 修复”）。不能用“已反馈”当“已解决”。
+- 整理时用 `memwiki_feedback action=list` 和 `memwiki_usage` 汇总未处理反馈与使用信号，**只汇报不改代码**。规则措辞可直接改库内 `_guide` 并留日志；工具行为或代码改进需另行确认方案再实施。不要重装 skill 来改规范。
+- 使用信号仅为改进工具：本地 `.memwiki/usage.jsonl` 不进 git，超过 1 MB 轮转保留一份；记录事件类别、查询（疑似凭据脱敏）等少量上下文，不记录正文、写入理由或凭据值。

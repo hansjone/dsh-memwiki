@@ -26,6 +26,12 @@ export async function resolveConfig(opts: ResolveConfigOpts = {}): Promise<Memwi
   const settings = manifest.settings ?? {}
   const contextBudget = opts.budget ?? (env.MEMWIKI_CONTEXT_BUDGET !== undefined ? Number(env.MEMWIKI_CONTEXT_BUDGET) : settings.contextBudget ?? 4096)
   const staleDays = settings.staleDays ?? 90
+  for (const key of ['similarCreateThreshold', 'overlapThreshold'] as const) {
+    const value = settings[key]
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1)) {
+      throw new MemwikiError('INVALID_META', `${key} 必须是 0 到 1 的数值`)
+    }
+  }
   if (!Number.isSafeInteger(contextBudget) || contextBudget <= 0 || !Number.isFinite(staleDays) || staleDays < 0 ||
     (settings.secretScan !== undefined && typeof settings.secretScan !== 'boolean') ||
     (settings.autoPush !== undefined && typeof settings.autoPush !== 'boolean')) {
@@ -40,5 +46,7 @@ export async function resolveConfig(opts: ResolveConfigOpts = {}): Promise<Memwi
     contextBudget,
     staleDays,
     secretScan: settings.secretScan ?? true,
+    ...(settings.similarCreateThreshold !== undefined ? { similarCreateThreshold: settings.similarCreateThreshold } : {}),
+    ...(settings.overlapThreshold !== undefined ? { overlapThreshold: settings.overlapThreshold } : {}),
   }
 }

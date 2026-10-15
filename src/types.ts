@@ -4,12 +4,12 @@
  */
 
 /** Page kinds (§3.2). */
-export type PageType = 'user' | 'rule' | 'project' | 'topic' | 'howto' | 'decision' | 'reference' | 'inbox'
+export type PageType = 'user' | 'rule' | 'project' | 'topic' | 'howto' | 'decision' | 'reference' | 'inbox' | 'meta'
 
 /** Page lifecycle status (§3.2). */
 export type PageStatus = 'active' | 'draft' | 'stale' | 'superseded'
 
-export const PAGE_TYPES: readonly PageType[] = ['user', 'rule', 'project', 'topic', 'howto', 'decision', 'reference', 'inbox']
+export const PAGE_TYPES: readonly PageType[] = ['user', 'rule', 'project', 'topic', 'howto', 'decision', 'reference', 'inbox', 'meta']
 export const PAGE_STATUSES: readonly PageStatus[] = ['active', 'draft', 'stale', 'superseded']
 
 /** Parsed frontmatter (§3.2). Unknown keys are preserved verbatim. */
@@ -96,7 +96,7 @@ export type MetaPatch = { [K in keyof PageMeta]?: PageMeta[K] | null }
 
 /** Write operations (§4.1). */
 export type WriteOp =
-  | { kind: 'create'; id: string; meta: MetaPatch & { title: string; summary: string }; body: string }
+  | { kind: 'create'; id: string; meta: MetaPatch & { title: string; summary: string }; body: string; force?: boolean }
   | { kind: 'replace'; id: string; rev: string; body: string; meta?: MetaPatch }
   | { kind: 'append'; id: string; text: string; section?: string; rev?: string }
   | { kind: 'edit'; id: string; rev: string; old: string; new: string }
@@ -117,6 +117,42 @@ export interface MoveResult {
   changedPaths: string[]
 }
 
+export interface MergeOp {
+  from: string[]
+  into: string
+  rev: string
+  body?: string
+  meta?: MetaPatch
+  ctx: WriteContext
+}
+
+export interface MergeResult {
+  page: Page
+  from: string[]
+  pages: Page[]
+  rewritten: string[]
+  changedPaths: string[]
+}
+
+export type FeedbackKind = 'bug' | 'friction' | 'missing' | 'rule'
+export interface FeedbackInput {
+  kind: FeedbackKind
+  title: string
+  scenario: string
+  expected: string
+  actual: string
+  ctx: WriteContext
+}
+export interface FeedbackEntry {
+  id: string
+  page: string
+  date: string
+  agent: string
+  kind: FeedbackKind
+  title: string
+  status: string
+}
+
 export interface DeleteResult {
   id: string
   /** Vault-relative path inside `.trash/`. */
@@ -130,6 +166,7 @@ export interface DeleteResult {
 export type ErrorCode =
   | 'NOT_FOUND'
   | 'EXISTS'
+  | 'SIMILAR_EXISTS'
   | 'CONFLICT'
   | 'AMBIGUOUS'
   | 'AMBIGUOUS_EDIT'
@@ -170,6 +207,8 @@ export interface MemwikiConfig {
   contextBudget: number
   staleDays: number
   secretScan: boolean
+  similarCreateThreshold?: number
+  overlapThreshold?: number
 }
 
 /** `memwiki.json` at the vault root (§7). */
@@ -177,7 +216,7 @@ export interface VaultManifest {
   schemaVersion: number
   name: string
   created: string
-  settings?: { staleDays?: number; contextBudget?: number; secretScan?: boolean; autoPush?: boolean }
+  settings?: { staleDays?: number; contextBudget?: number; secretScan?: boolean; autoPush?: boolean; similarCreateThreshold?: number; overlapThreshold?: number }
 }
 
 /** Search query (§5). */
@@ -223,6 +262,7 @@ export interface ContextOptions {
   vaultDir: string
   /** Number of entries in inbox files (§6.2 step 6). */
   inboxCount: number
+  feedbackOpen?: number
 }
 
 export type LintCode =
@@ -237,6 +277,9 @@ export type LintCode =
   | 'inbox_backlog'
   | 'secret_suspect'
   | 'uncommitted'
+  | 'overlap'
+  | 'fact_repeat'
+  | 'feedback_open'
 
 export interface LintIssue {
   code: LintCode
@@ -244,6 +287,10 @@ export interface LintIssue {
   page?: string
   message: string
   fixable: boolean
+  severity?: 'info' | 'warning'
+  pages?: string[]
+  similarity?: number
+  token?: string
 }
 
 export interface LintOptions {
@@ -254,6 +301,7 @@ export interface LintOptions {
   inboxEntries: { page: string; date: string }[]
   /** Secret scanner (core/secrets.ts) injected by the caller; omitted → no `secret_suspect` issues. */
   scanSecrets?: (text: string) => SecretFinding[]
+  overlapThreshold?: number
 }
 
 /** One `log.md` entry (§4.4). */

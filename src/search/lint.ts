@@ -1,5 +1,8 @@
 import { PAGE_STATUSES, PAGE_TYPES } from '../types.ts'
 import type { LintIssue, LintOptions, MetaPatch, PageRecord, PageType } from '../types.ts'
+import { contentEligible, contentFingerprint, jaccard, OVERLAP_THRESHOLD } from './similarity.ts'
+import { factTokens } from './facts.ts'
+import { feedbackEntries } from '../core/feedback.ts'
 
 const DAY = 86_400_000
 const text = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0
@@ -9,7 +12,7 @@ const date = (value: unknown) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2
 const timestamp = (value: unknown) => typeof value === 'string'
   && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u.test(value)
   && date(value.slice(0, 10)) && Number.isFinite(Date.parse(value))
-const TYPES: Record<string, PageType> = { user: 'user', rules: 'rule', projects: 'project', topics: 'topic', howto: 'howto', decisions: 'decision', reference: 'reference', inbox: 'inbox' }
+const TYPES: Record<string, PageType> = { user: 'user', rules: 'rule', projects: 'project', topics: 'topic', howto: 'howto', decisions: 'decision', reference: 'reference', inbox: 'inbox', meta: 'meta' }
 
 function invalidFields(record: PageRecord): string[] {
   const m = record.meta
@@ -49,6 +52,7 @@ export function lintRecords(records: PageRecord[], opts: LintOptions): LintIssue
   const ids = new Set(records.map(r => r.id.toLowerCase()))
   const incoming = new Set<string>()
   const names = new Map<string, Set<string>>()
+  const secretPages = new Set<string>()
   for (const r of records) {
     for (const target of r.links) if (target.toLowerCase() !== r.id.toLowerCase()) incoming.add(target.toLowerCase())
     for (const name of [r.meta.title, ...(Array.isArray(r.meta.aliases) ? r.meta.aliases : [])]) {
@@ -79,12 +83,43 @@ export function lintRecords(records: PageRecord[], opts: LintOptions): LintIssue
     if (Buffer.byteLength(r.body, 'utf8') > 20 * 1024) add('oversized', r.id, '正文超过 20 KB，建议拆分')
     if (opts.scanSecrets) {
       const scanText = Object.entries(m).map(([name, value]) => `${name}: ${typeof value === 'string' ? value : JSON.stringify(value)}`).join('\n') + '\n---\n' + r.body
-      for (const finding of opts.scanSecrets(scanText)) add('secret_suspect', r.id, `敏感信息规则 ${finding.rule}，第 ${finding.line} 行`)
+      const findings = opts.scanSecrets(scanText)
+      if (findings.length) secretPages.add(r.id)
+      for (const finding of findings) add('secret_suspect', r.id, `敏感信息规则 ${finding.rule}，第 ${finding.line} 行`)
     }
   }
   for (const [name, pages] of names) if (pages.size > 1) {
     for (const page of pages) add('duplicate_title', page, `标题或别名重复：${name}（${[...pages].join('、')}）`)
   }
+  const content = records.filter(contentEligible).sort((a, b) => a.id.localeCompare(b.id))
+  const fingerprints = content.map(r => contentFingerprint(r.body))
+  let overlaps = 0
+  const facts = new Map<string, string[]>()
+  for (let i = 0; i < content.length; i++) {
+    const a = content[i]
+    for (let j = i + 1; j < content.length && overlaps < 20; j++) {
+      const b = content[j]
+      const similarity = jaccard(fingerprints[i], fingerprints[j])
+      if (similarity > 0 && similarity >= (opts.overlapThreshold ?? OVERLAP_THRESHOLD)) {
+        issues.push({ code: 'overlap', page: a.id, pages: [a.id, b.id], similarity, severity: 'warning', fixable: false,
+          message: `[[${a.id}]] 与 [[${b.id}]] 正文相似度 ${(similarity * 100).toFixed(1)}%，建议核对归属并合并` })
+        overlaps++
+      }
+    }
+    // Reuse the single injected scan per page; never echo facts from a suspect page.
+    const safe = secretPages.has(a.id) ? '' : [a.meta.title, a.meta.summary, a.body].join('\n')
+    for (const token of factTokens(safe)) {
+      if (!facts.has(token)) facts.set(token, [])
+      facts.get(token)!.push(a.id)
+    }
+  }
+  for (const [token, pages] of [...facts].filter(([, pages]) => pages.length >= 3)
+    .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0])).slice(0, 10)) {
+    issues.push({ code: 'fact_repeat', token, pages, severity: 'info', fixable: false,
+      message: `关键事实 ${token} 出现在 ${pages.length} 页：${pages.slice(0, 10).map(id => `[[${id}]]`).join('、')}${pages.length > 10 ? '…' : ''}；确认只有一页是归属，其余改为链接（链接引用可能正常）` })
+  }
+  const open = feedbackEntries(records).length
+  if (open) add('feedback_open', undefined, `有 ${open} 条反馈待处理，见 meta/feedback/`)
   if (opts.inboxEntries.length > 20 || opts.inboxEntries.some(entry => opts.now.getTime() - Date.parse(entry.date) > 14 * DAY)) {
     add('inbox_backlog', undefined, `inbox 有 ${opts.inboxEntries.length} 条未整理记录，数量超过 20 条或已有记录超过 14 天`)
   }

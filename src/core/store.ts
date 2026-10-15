@@ -1,13 +1,14 @@
 import { mkdir, readdir, readFile, rename, stat, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { MemwikiError } from '../types.ts'
-import type { MemwikiConfig, Page, PageMeta, WriteOp, WriteContext, WriteResult, MoveResult, DeleteResult } from '../types.ts'
+import type { MemwikiConfig, Page, PageMeta, WriteOp, WriteContext, WriteResult, MoveResult, DeleteResult, MergeOp, MergeResult } from '../types.ts'
 import { normalizeId, idToRelPath, relPathToId, isSpecialId, safeResolve } from './ids.ts'
 import { applyMetaPatch, computeRev, defaultMeta, localDate, nowIso, parsePage, serializePage } from './page.ts'
 import { codeRanges, createResolver, extractLinks, rewriteLinks } from './links.ts'
 import { scanSecrets } from './secrets.ts'
 import { withLock } from './lock.ts'
 import { atomicWrite } from './fs.ts'
+import { contentEligible, similarPages } from '../search/similarity.ts'
 
 const ignored = new Set(['.trash', '.memwiki', '.obsidian', '.git', 'node_modules'])
 const STRUCTURE_LOCK = ':store-structure'
@@ -190,6 +191,7 @@ export class Store {
     const run = () => withLock(this.config.dir, requested, async () => {
       const actual = await this.existingId(requested)
       if (op.kind === 'create' && actual) throw new MemwikiError('EXISTS', '页面已经存在', { id: actual })
+      if (op.kind === 'create' && op.force && (typeof ctx.reason !== 'string' || !ctx.reason.trim())) throw new MemwikiError('INVALID_META', 'force 新建必须写明 reason')
       if (op.kind !== 'create' && !actual) throw new MemwikiError('NOT_FOUND', '页面不存在', { id: requested })
       const id = actual ?? await this.newId(requested)
       const page = op.kind === 'create' ? undefined : await this.load(id, true)
@@ -221,10 +223,78 @@ export class Store {
       }
       meta = this.updated(meta, id, ctx)
       const rel = idToRelPath(id)
-      await atomicWrite(this.config.dir, rel, this.prepare(meta, body))
+      const raw = this.prepare(meta, body)
+      if (op.kind === 'create' && !op.force && contentEligible({ id, meta, body })) {
+        const candidates = similarPages({ meta, body }, await this.list(), this.config.similarCreateThreshold)
+        if (candidates.length) throw new MemwikiError('SIMILAR_EXISTS', '请更新已有页面；确实是不同主题时带 force 并写明理由', { candidates })
+      }
+      await atomicWrite(this.config.dir, rel, raw)
       return { page: await this.load(id, true), created: op.kind === 'create', changedPaths: [rel] }
     })
     return op.kind === 'create' ? withLock(this.config.dir, STRUCTURE_LOCK, run) : run()
+  }
+
+  /** Validates every input and prepares every output before the first write. Sources stay as redirects. */
+  async merge(op: MergeOp): Promise<MergeResult> {
+    return withLock(this.config.dir, STRUCTURE_LOCK, async () => {
+      if (!op.from.length) throw new MemwikiError('INVALID_META', 'from 不能为空')
+      const destination = await this.resolve(op.into)
+      const sources = await Promise.all(op.from.map(ref => this.resolve(ref)))
+      const sourceIds = new Set(sources.map(p => fold(p.id)))
+      if (sourceIds.has(fold(destination.id))) throw new MemwikiError('INVALID_META', 'from 不能包含 into')
+      if (sourceIds.size !== sources.length) throw new MemwikiError('INVALID_META', 'from 不能包含重复页面')
+      const snapshot = await this.list()
+      return this.locks(snapshot.map(p => p.id), async () => {
+        const current = await this.load(destination.id, true)
+        if (current.rev !== op.rev) throw new MemwikiError('CONFLICT', '目标页面已更新，请重新读取', { rev: current.rev })
+        const freshSources = await Promise.all(sources.map(p => this.load(p.id, true)))
+        for (const page of [current, ...freshSources]) this.ensurePageId(page.id)
+        if (current.meta.status === 'superseded') throw new MemwikiError('INVALID_META', '不能合并到 superseded 页面')
+        const targets = new Set(freshSources.flatMap(p => [p.id, p.meta.title, ...p.meta.aliases]).map(fold))
+        const rewrite = (body: string) => rewriteLinks(body, target => targets.has(fold(target)) ? current.id : undefined)
+        const nextMeta = applyMetaPatch(current.meta, op.meta ?? {})
+        if (nextMeta.aliases !== undefined && (!Array.isArray(nextMeta.aliases) || !nextMeta.aliases.every(alias => typeof alias === 'string'))) {
+          throw new MemwikiError('INVALID_META', 'aliases 必须是字符串数组')
+        }
+        const aliases = [...(nextMeta.aliases ?? []), ...freshSources.flatMap(p => [p.meta.title, ...p.meta.aliases])]
+        nextMeta.aliases = [...new Map(aliases.map(alias => [fold(alias), alias])).values()]
+        nextMeta.created = current.meta.created
+        if (nextMeta.status === 'superseded') throw new MemwikiError('INVALID_META', '合并目标必须保留为有效页面')
+        // Superseded stubs relinquish title/alias ownership; exact old IDs still land on a redirect.
+        const pending: Array<{ id: string; raw: string }> = []
+        const rewritten: string[] = []
+        for (const old of snapshot) {
+          const page = await this.load(old.id, true)
+          let body = rewrite(page.body)
+          let meta = page.meta
+          if (fold(page.id) === fold(current.id)) { body = rewrite(op.body ?? current.body); meta = nextMeta }
+          else if (sourceIds.has(fold(page.id))) {
+            meta = { ...page.meta, title: `已合并：${page.id}`, summary: `已合并到 ${current.id}`, aliases: [], status: 'superseded', superseded_by: current.id }
+            body = `已合并到 [[${current.id}]]\n`
+          } else if (body === page.body) continue
+          if (body !== page.body) rewritten.push(page.id)
+          pending.push({ id: page.id, raw: this.prepare(this.updated(meta, page.id, op.ctx), body) })
+        }
+        for (const change of pending) await atomicWrite(this.config.dir, idToRelPath(change.id), change.raw)
+        const pages = await Promise.all(pending.map(p => this.load(p.id, true)))
+        return { page: pages.find(p => fold(p.id) === fold(current.id))!, from: freshSources.map(p => p.id), pages,
+          rewritten, changedPaths: pending.map(p => idToRelPath(p.id)) }
+      })
+    })
+  }
+
+  /** Verification deliberately changes only verified/status; provenance and body stay intact. */
+  async verify(ref: string): Promise<WriteResult> {
+    const source = await this.resolve(ref)
+    this.ensurePageId(source.id)
+    return withLock(this.config.dir, source.id, async () => {
+      const page = await this.load(source.id, true)
+      const meta = { ...page.meta, verified: localDate() }
+      if (meta.status === 'stale') meta.status = 'active'
+      const rel = idToRelPath(page.id)
+      await atomicWrite(this.config.dir, rel, this.prepare(meta, page.body))
+      return { page: await this.load(page.id, true), created: false, changedPaths: [rel] }
+    })
   }
 
   /** Moves a page and rewrites references to its ID/title/aliases, preserving link suffixes. */

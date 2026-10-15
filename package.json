@@ -1,6 +1,6 @@
 {
   "name": "dsh-memwiki",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "多个 AI 共用的记忆 wiki：Markdown/Obsidian 库 + MCP 服务，DeepSeek Harness、Claude Code、Codex、Cursor 通用。 · Shared memory wiki for AI agents: an Obsidian-compatible Markdown vault served over MCP.",
   "type": "module",
   "main": "lib/index.js",
@@ -41,7 +41,7 @@
     "build": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && bun run scripts/build-host.mjs && bun run scripts/build-client.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "check:bundles": "node scripts/check-bundles.mjs",
-    "test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "test": "node --test --test-concurrency=1 --test-timeout=120000 \"test/**/*.test.ts\"",
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "dsh": {
