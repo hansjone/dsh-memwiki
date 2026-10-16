@@ -1,7 +1,8 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { McpServer, type ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import * as z from 'zod'
 import type { Memwiki } from '../memwiki.ts'
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import type { MetaPatch, PageType, WriteOp } from '../types.ts'
 import { MemwikiError, PAGE_TYPES } from '../types.ts'
 import { SecretStore } from '../secrets/store.ts'
@@ -52,49 +53,66 @@ function formatMeta(page: { meta: Record<string, unknown>; rev: string }): strin
   return lines
 }
 
+export interface ServerOptions {
+  remote?: boolean
+  runTool?: (name: string, args: Record<string, unknown>, run: () => Promise<CallToolResult>) => Promise<CallToolResult>
+}
+
 /** Builds an MCP server bound to an open Memwiki instance (§8.1). */
-export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ vaultDir: wiki.config.dir })): McpServer {
+export function createMemwikiServer(wiki: Memwiki, secrets?: SecretStore, options: ServerOptions = {}): McpServer {
   const server = new McpServer(
     { name: 'memwiki', version: '0.3.0' },
     { instructions: INSTRUCTIONS, capabilities: { tools: {}, prompts: {} } },
   )
 
-  const secretNotice = '仅保存本地开发、测试账号、内网设备等低风险凭据；银行、邮箱、主账号和生产环境密码不要存。'
-  const secretCall = async (fn: () => Promise<unknown>) => {
-    try { return text(JSON.stringify(await fn(), null, 2)) }
-    catch (e) {
-      // Never render arbitrary exceptions from a protector or store.
-      return text(`${e instanceof MemwikiError ? e.code : 'ERROR'}：凭据操作失败`, true)
-    }
-  }
-  server.registerTool('memwiki_secret_list', {
-    description: `列出本机凭据名字、用途和时间，不返回值。${secretNotice}非 Windows 第一版为明文文件，以 0600 权限保护。`,
-    inputSchema: {},
-  }, () => secretCall(async () => ({ entries: await secrets.list(), protection: secrets.protector.kind, notice: secrets.protector.kind === 'plain' ? '当前平台为明文文件存储，以 0600 文件权限保护。' : 'Windows DPAPI（CurrentUser）' })))
-  server.registerTool('memwiki_secret_get', {
-    description: `按名字取凭据，purpose 必填并记访问日志。只用于 scope 说明的用途，不要回显给用户、不要写进任何文件或页面。${secretNotice}`,
-    inputSchema: { name: z.string(), purpose: z.string().trim().min(1).describe('本次取凭据的具体用途，记入访问日志') },
-  }, ({ name, purpose }) => secretCall(async () => {
-    const { value, scope } = await secrets.getWithScope(name, { agent: wiki.config.agent, purpose })
-    return { value, scope, reminder: '只用于 scope 说明的用途，不要回显给用户、不要写进任何文件或页面。' }
-  }))
-  server.registerTool('memwiki_secret_set', {
-    description: `仅在用户在对话里明确要求“帮我记住这个密码”时存入本机凭据库，页面只写 secret:<名字>。不会返回值。${secretNotice}`,
-    inputSchema: { name: z.string(), value: z.string().min(1), scope: z.string().trim().min(1).describe('允许使用这条凭据的用途') },
-  }, ({ name, value, scope }) => secretCall(() => secrets.set(name, value, scope, { agent: wiki.config.agent })))
-  server.registerTool('memwiki_secret_delete', {
-    description: '删除本机凭据（不可恢复），仅按用户要求使用，不影响 wiki 引用。',
-    inputSchema: { name: z.string() },
-  }, ({ name }) => secretCall(async () => { await secrets.delete(name, { agent: wiki.config.agent }); return { deleted: true } }))
+  const registerTool = <Shape extends z.ZodRawShape>(name: string,
+    config: { description: string; inputSchema: Shape },
+    callback: (args: z.output<z.ZodObject<Shape>>) => Promise<CallToolResult>,
+  ) => server.registerTool<z.ZodRawShape, Shape>(name, config, (async (args: unknown) => {
+    const run = async () => callback(args as z.output<z.ZodObject<Shape>>)
+    return options.runTool ? options.runTool(name, args as Record<string, unknown>, run) : run()
+  }) as ToolCallback<Shape>)
 
-  server.registerTool('memwiki_context', {
+  if (!options.remote) {
+    const secretStore = secrets ?? new SecretStore({ vaultDir: wiki.config.dir })
+    const secretNotice = '仅保存本地开发、测试账号、内网设备等低风险凭据；银行、邮箱、主账号和生产环境密码不要存。'
+    const secretCall = async (fn: () => Promise<unknown>) => {
+      try { return text(JSON.stringify(await fn(), null, 2)) }
+      catch (e) {
+        // Never render arbitrary exceptions from a protector or store.
+        return text(`${e instanceof MemwikiError ? e.code : 'ERROR'}：凭据操作失败`, true)
+      }
+    }
+    registerTool('memwiki_secret_list', {
+      description: `列出本机凭据名字、用途和时间，不返回值。${secretNotice}非 Windows 第一版为明文文件，以 0600 权限保护。`,
+      inputSchema: {},
+    }, () => secretCall(async () => ({ entries: await secretStore.list(), protection: secretStore.protector.kind, notice: secretStore.protector.kind === 'plain' ? '当前平台为明文文件存储，以 0600 文件权限保护。' : 'Windows DPAPI（CurrentUser）' })))
+    registerTool('memwiki_secret_get', {
+      description: `按名字取凭据，purpose 必填并记访问日志。只用于 scope 说明的用途，不要回显给用户、不要写进任何文件或页面。${secretNotice}`,
+      inputSchema: { name: z.string(), purpose: z.string().trim().min(1).describe('本次取凭据的具体用途，记入访问日志') },
+    }, ({ name, purpose }) => secretCall(async () => {
+      const { value, scope } = await secretStore.getWithScope(name, { agent: wiki.config.agent, purpose })
+      return { value, scope, reminder: '只用于 scope 说明的用途，不要回显给用户、不要写进任何文件或页面。' }
+    }))
+    registerTool('memwiki_secret_set', {
+      description: `仅在用户在对话里明确要求“帮我记住这个密码”时存入本机凭据库，页面只写 secret:<名字>。不会返回值。${secretNotice}`,
+      inputSchema: { name: z.string(), value: z.string().min(1), scope: z.string().trim().min(1).describe('允许使用这条凭据的用途') },
+    }, ({ name, value, scope }) => secretCall(() => secretStore.set(name, value, scope, { agent: wiki.config.agent })))
+    registerTool('memwiki_secret_delete', {
+      description: '删除本机凭据（不可恢复），仅按用户要求使用，不影响 wiki 引用。',
+      inputSchema: { name: z.string() },
+    }, ({ name }) => secretCall(async () => { await secretStore.delete(name, { agent: wiki.config.agent }); return { deleted: true } }))
+
+  }
+
+  registerTool('memwiki_context', {
     description: '返回共享记忆库的精简目录（每页一行摘要，置顶页、规则、用户偏好和当前项目的页面在前）。任务开始时先调用一次，了解已有哪些知识；会话开始已注入过目录就不用再调。',
     inputSchema: {
       project: z.string().optional().describe('当前项目名，等于项目 git 根目录的目录名（如 netx）；该项目的页面会排在前面'),
     },
   }, async ({ project }) => text(wiki.context(project) || '（目录为空）'))
 
-  server.registerTool('memwiki_search', {
+  registerTool('memwiki_search', {
     description: '全文检索记忆页面（标题、别名、标签、摘要、正文，中英文都行），返回摘要和匹配片段。写入任何内容之前先用它找有没有相关页面；用户提到"之前""上次"时也先搜。',
     inputSchema: {
       query: z.string().describe('两三个关键词，空格分隔，如 "发布 流程 PATH"'),
@@ -120,7 +138,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     return text(lines.join('\n\n'))
   })
 
-  server.registerTool('memwiki_read', {
+  registerTool('memwiki_read', {
     description: '读取一页的全文、页头、rev（修改时要带上）、记录于多少天前、反向链接和断链。涉及代码、配置、路径的旧内容，先核实再用。写作规范可读 _guide。',
     inputSchema: {
       page: z.string().describe('页面 ID、标题或别名'),
@@ -146,7 +164,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     } catch (e) { return formatError(e) }
   })
 
-  server.registerTool('memwiki_write', {
+  registerTool('memwiki_write', {
     description: [
       '新建或修改记忆页面。先 memwiki_search，有相关页面就更新它，没有才新建。除 create/append 外都要带 memwiki_read 拿到的 rev；返回 CONFLICT 时重新读取再改。',
       '模式：create 新建（要 title、一句话 summary、body）；append 追加一段（可用 heading 指定追加到哪一节）；',
@@ -218,7 +236,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     } catch (e) { return formatError(e) }
   })
 
-  server.registerTool('memwiki_remember', {
+  registerTool('memwiki_remember', {
     description: '拿不准该放进哪一页时，先把一条内容快速记进 inbox（不会丢），同时返回最相关的 3 个已有页面；合适的话直接用 memwiki_write 更新那一页更好。',
     inputSchema: {
       text: z.string().describe('要记住的内容'),
@@ -237,7 +255,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     } catch (e) { return formatError(e) }
   })
 
-  server.registerTool('memwiki_merge', {
+  registerTool('memwiki_merge', {
     description: '把多个页面合并到一个归属页。先 lint fix 将相对 Markdown 页面链接转为双链，并确认独有内容已在归属页；body 由你整理，不传则保留目标正文。源文件直接删除，标题和别名并入目标 aliases，全库双链自动改写，一次提交。',
     inputSchema: { from: z.array(z.string()).min(1), into: z.string(), rev: z.string(), body: z.string().optional(),
       meta: z.record(z.string(), z.unknown()).optional(), reason: z.string().trim().min(1) },
@@ -248,7 +266,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     } catch (e) { return formatError(e) }
   })
 
-  server.registerTool('memwiki_verify', {
+  registerTool('memwiki_verify', {
     description: '读到并核实过页面后调用：verified 设为本地今天，stale 恢复 active；不需要 rev，不修改正文。',
     inputSchema: { page: z.string(), note: z.string().optional() },
   }, async ({ page, note }) => {
@@ -258,7 +276,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     } catch (e) { return formatError(e) }
   })
 
-  server.registerTool('memwiki_feedback', {
+  registerTool('memwiki_feedback', {
     description: '记录工具 bug、使用阻力、缺失能力或规则不清（action=add，默认）；list 列反馈；resolve 按 id 与 resolution 标记解决。不要包含凭据。',
     inputSchema: { action: z.enum(['add', 'list', 'resolve']).optional(), kind: z.enum(['bug', 'friction', 'missing', 'rule']).optional(),
       title: z.string().optional(), scenario: z.string().optional(), expected: z.string().optional(), actual: z.string().optional(),
@@ -278,7 +296,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     } catch (e) { return formatError(e) }
   })
 
-  server.registerTool('memwiki_usage', {
+  registerTool('memwiki_usage', {
     description: '仅汇总零结果搜索、版本冲突、密钥拦截、编辑找不到/不唯一、相似拦截及成功强制新建；不统计正常搜索、阅读或其他成功写入。输出事件次数、零结果查询 Top 10；无事件时明确说明。不含页面正文或凭据。',
     inputSchema: { days: z.number().positive().optional() },
   }, async ({ days }) => {
@@ -286,7 +304,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     catch (e) { return formatError(e) }
   })
 
-  server.registerTool('memwiki_move', {
+  registerTool('memwiki_move', {
     description: '改名或移动页面，所有指向它的 [[链接]] 会自动改写；先 lint fix 将相对 Markdown 页面链接转为双链。',
     inputSchema: {
       page: z.string().describe('源页面引用'),
@@ -300,7 +318,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     } catch (e) { return formatError(e) }
   })
 
-  server.registerTool('memwiki_delete', {
+  registerTool('memwiki_delete', {
     description: '把页面移到回收站（可用 memwiki_restore 恢复）。待核实内容用 status: stale；被归属页替代的内容用 memwiki_merge。',
     inputSchema: {
       page: z.string().describe('页面引用'),
@@ -313,7 +331,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     } catch (e) { return formatError(e) }
   })
 
-  server.registerTool('memwiki_restore', {
+  registerTool('memwiki_restore', {
     description: '从回收站恢复页面',
     inputSchema: {
       trashPath: z.string().describe('回收站相对路径，如 .trash/topics/x.123.md'),
@@ -326,7 +344,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     } catch (e) { return formatError(e) }
   })
 
-  server.registerTool('memwiki_lint', {
+  registerTool('memwiki_lint', {
     description: '体检记忆库：格式、双链、Markdown 页面链接、过时、overlap、fact_repeat、open 反馈与 git。fix=true 自动将相对 Markdown 页面链接转为双链并修复安全项；内容重叠、事实重复与反馈汇总不可自动修。',
     inputSchema: {
       fix: z.boolean().optional().describe('是否自动修复，默认否'),
@@ -341,7 +359,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets = new SecretStore({ v
     } catch (e) { return formatError(e) }
   })
 
-  server.registerTool('memwiki_log', {
+  registerTool('memwiki_log', {
     description: '最近的变更日志：谁、什么时候、改了哪页、为什么。',
     inputSchema: {
       limit: z.number().int().positive().optional().describe('条数，默认 20'),

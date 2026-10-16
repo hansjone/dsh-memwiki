@@ -83,9 +83,10 @@ export class Memwiki {
   }
 
   /** Opens a vault: loads pages into the search index and starts the file watcher. */
-  static async open(config: MemwikiConfig): Promise<Memwiki> {
+  static async open(config: MemwikiConfig, options: { watch?: boolean } = {}): Promise<Memwiki> {
     const wiki = new Memwiki(config)
     await wiki.rebuildIndex()
+    if (options.watch === false) return wiki
     wiki.watcher = watchVault(wiki.config.dir, {
       onExternalChange: async () => { await wiki.refreshFromDisk() },
       onExternalCommit: async (changed) => {

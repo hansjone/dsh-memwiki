@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
-import { mkdir, readdir, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, stat, utimes, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { withLock } from '../src/core/lock.ts'
@@ -30,4 +30,16 @@ test('stale locks can be claimed and live locks time out with LOCKED', async t =
   assert.equal(await withLock(dir, 'page', async () => 'claimed'), 'claimed')
   await writeFile(file, 'live')
   await assert.rejects(withLock(dir, 'page', async () => 'never'), code('LOCKED'))
+})
+
+test('active lock renews its lease so long operations do not appear stale', async t => {
+  const dir = await temporary(t)
+  const file = path.join(dir, '.memwiki', 'locks', createHash('sha256').update('long-operation').digest('hex') + '.lock')
+  await withLock(dir, 'long-operation', async () => {
+    const old = new Date(Date.now() - 11_000)
+    await utimes(file, old, old)
+    await delay(2200)
+    assert.ok(Date.now() - (await stat(file)).mtimeMs < 2000)
+  })
+  assert.deepEqual(await readdir(path.dirname(file)), [])
 })

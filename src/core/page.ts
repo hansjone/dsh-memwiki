@@ -3,7 +3,7 @@ import { parse, stringify } from 'yaml'
 import { PAGE_TYPES, PAGE_STATUSES } from '../types.ts'
 import type { PageMeta, MetaPatch, PageType, MetaIssue } from '../types.ts'
 
-const ORDER = ['title', 'summary', 'type', 'tags', 'aliases', 'status', 'created', 'updated', 'updated_by', 'verified', 'sources', 'project', 'pinned']
+const ORDER = ['title', 'summary', 'type', 'tags', 'aliases', 'status', 'visibility', 'created', 'updated', 'updated_by', 'verified', 'sources', 'project', 'pinned']
 const stringArray = (v: unknown) => Array.isArray(v) && v.every(x => typeof x === 'string')
 const date = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v)) && new Date(v).toISOString().slice(0, 10) === v
 const datetime = (v: unknown) => typeof v === 'string' && date(v.slice(0, 10)) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(v) && !Number.isNaN(Date.parse(v))
@@ -14,6 +14,7 @@ const valid: Record<string, (v: unknown) => boolean> = {
   tags: stringArray, aliases: stringArray, sources: stringArray,
   created: date, updated: datetime, updated_by: v => typeof v === 'string' && !!v.trim(),
   verified: date,
+  visibility: v => v === 'company' || v === 'all',
   project: v => typeof v === 'string', pinned: v => typeof v === 'boolean',
 }
 const required = ['title', 'summary', 'type', 'status', 'created', 'updated', 'updated_by']
@@ -22,6 +23,7 @@ function invalidReason(field: string, value: unknown): string {
   if (['tags', 'aliases', 'sources'].includes(field)) return '必须是字符串数组'
   if (field === 'type') return '必须是以下类型之一：' + PAGE_TYPES.join('、')
   if (field === 'status') return '必须是以下状态之一：' + PAGE_STATUSES.join('、')
+  if (field === 'visibility') return '必须是 company 或 all'
   if (['created', 'verified'].includes(field)) return '必须是有效日期（YYYY-MM-DD）'
   if (field === 'updated') return '必须是带时区的有效 ISO 日期时间'
   if (field === 'pinned') return '必须是布尔值'

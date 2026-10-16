@@ -11,6 +11,7 @@ import { resolveConfig } from './config.ts'
 import { initVault } from './core/vault.ts'
 import { Memwiki } from './memwiki.ts'
 import { serveMemwiki } from './mcp/server.ts'
+import { serveRemote } from './mcp/remote.ts'
 import { MemwikiError } from './types.ts'
 import { SecretStore } from './secrets/store.ts'
 import { readSecretInput } from './secrets/input.ts'
@@ -26,6 +27,7 @@ const HELP = `dsh-memwiki — 多个 AI 共用的记忆 wiki
 用法：
   dsh-memwiki init [dir] [--name <名>] [--no-git]
   dsh-memwiki serve [--dir <库>] [--agent <id>] [--no-git] [--push|--no-push]
+  dsh-memwiki serve-remote --dir <库> --port <端口> --hub-pubkey <SPKI公钥文件> [--audit-file <库外日志>]
   dsh-memwiki context [--project <名>] [--dir ...]
   dsh-memwiki search <query> [--dir ...]
   dsh-memwiki read <page> [--dir ...]
@@ -60,7 +62,7 @@ async function gitProjectName(cwd = process.cwd()): Promise<string | undefined> 
   } catch { return undefined }
 }
 
-async function openWiki(flags: { dir?: string; agent?: string; git?: boolean; push?: boolean; budget?: number }) {
+async function openWiki(flags: { dir?: string; agent?: string; git?: boolean; push?: boolean; budget?: number }, watch = true) {
   const config = await resolveConfig({
     dir: flags.dir,
     agent: flags.agent,
@@ -68,7 +70,7 @@ async function openWiki(flags: { dir?: string; agent?: string; git?: boolean; pu
     push: flags.push,
     budget: flags.budget,
   })
-  return Memwiki.open(config)
+  return Memwiki.open(config, { watch })
 }
 
 function mcpCommandBlock(agent: string, vaultDir?: string) {
@@ -251,6 +253,9 @@ async function main() {
       strict: secretCommand,
       options: {
         dir: { type: 'string' },
+        port: { type: 'string' },
+        'hub-pubkey': { type: 'string' },
+        'audit-file': { type: 'string' },
         agent: { type: 'string' },
         project: { type: 'string' },
         name: { type: 'string' },
@@ -331,6 +336,21 @@ async function main() {
 
     if (cmd === 'install-skill') {
       await installSkill((values.target as string[] | undefined) ?? [])
+      return
+    }
+
+    if (cmd === 'serve-remote') {
+      if (!flags.dir || typeof values.port !== 'string' || typeof values['hub-pubkey'] !== 'string') {
+        throw new Error('用法：serve-remote --dir <库> --port <端口> --hub-pubkey <公钥文件>')
+      }
+      const wiki = await openWiki(flags, false)
+      try {
+        const server = await serveRemote(wiki, { port: Number(values.port), hubPubkey: values['hub-pubkey'], auditFile: values['audit-file'] as string | undefined })
+        const stop = () => { server.close(() => { void wiki.close().then(() => process.exit(0)) }); server.closeIdleConnections() }
+        process.once('SIGINT', stop)
+        process.once('SIGTERM', stop)
+        console.error(`团队知识库 MCP 已监听 /mcp，端口 ${(server.address() as { port: number }).port}`)
+      } catch (e) { await wiki.close(); throw e }
       return
     }
 

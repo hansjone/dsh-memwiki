@@ -9,6 +9,7 @@ import { scanSecrets } from './secrets.ts'
 import { withLock } from './lock.ts'
 import { atomicWrite } from './fs.ts'
 import { contentEligible, similarPages } from '../search/similarity.ts'
+import { actorSource, remoteActor } from './actor.ts'
 
 const ignored = new Set(['.trash', '.memwiki', '.obsidian', '.git', 'node_modules'])
 const STRUCTURE_LOCK = ':store-structure'
@@ -166,7 +167,14 @@ export class Store {
   }
 
   private updated(meta: PageMeta, id: string, ctx: WriteContext): PageMeta {
-    const next = { ...meta, updated: nowIso(), updated_by: ctx.agent }
+    const actor = remoteActor.getStore()
+    if (actor) ctx = { ...ctx, agent: actor.sub }
+    const next: PageMeta = { ...meta, updated: nowIso(), updated_by: ctx.agent }
+    if (actor) {
+      next.sources = [...new Set([...(Array.isArray(next.sources) ? next.sources : []), actorSource(actor)])]
+      next.updated_by_name = actor.name
+      next.visibility ??= 'company'
+    }
     if (ctx.source) {
       if (next.sources !== undefined && (!Array.isArray(next.sources) || !next.sources.every(s => typeof s === 'string'))) throw new MemwikiError('INVALID_META', 'sources 必须是字符串数组', { errors: [{ field: 'sources', reason: '必须是字符串数组' }] })
       next.sources = [...new Set([...(next.sources ?? []), ctx.source])]
@@ -301,7 +309,8 @@ export class Store {
       const meta = { ...page.meta, verified: localDate() }
       if (meta.status === 'stale') meta.status = 'active'
       const rel = idToRelPath(page.id)
-      await atomicWrite(this.config.dir, rel, this.prepare(meta, page.body))
+      const actor = remoteActor.getStore()
+      await atomicWrite(this.config.dir, rel, this.prepare(actor ? this.updated(meta, page.id, { agent: actor.sub, reason: '核实' }) : meta, page.body))
       return { page: await this.load(page.id, true), created: false, changedPaths: [rel] }
     })
   }
@@ -374,6 +383,7 @@ export class Store {
         const target = safeResolve(this.config.dir, trashPath)
         await mkdir(path.dirname(target), { recursive: true })
         safeResolve(this.config.dir, trashPath)
+        if (remoteActor.getStore()) await atomicWrite(this.config.dir, idToRelPath(page.id), this.prepare(this.updated(page.meta, page.id, _ctx), page.body))
         await rename(safeResolve(this.config.dir, idToRelPath(page.id)), target)
         this.cache.delete(page.id)
         return { id: page.id, trashPath, danglingFrom, changedPaths: [idToRelPath(page.id), trashPath] }

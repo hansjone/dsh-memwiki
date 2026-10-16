@@ -20,6 +20,8 @@ export interface PageMeta {
   tags: string[]
   aliases: string[]
   status: PageStatus
+  /** Omitted on older pages means company. */
+  visibility?: 'company' | 'all'
   /** ISO date `YYYY-MM-DD`. */
   created: string
   /** ISO datetime with offset. */

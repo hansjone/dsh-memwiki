@@ -42,6 +42,34 @@ dsh-memwiki install-skill
 # 或 --target claude --target cursor
 ```
 
+## 团队远程模式
+
+团队库由独立的 memwiki 进程托管，Hub 负责登录与身份签发。个人用户继续使用 `serve` 的 stdio 接入，原有 Claude Code、Codex、Cursor 和 DSH 配置无需调整。
+
+先初始化团队库（启用 git 以保留提交作者），再启动：
+
+```bash
+dsh-memwiki init /data/team-kb
+dsh-memwiki serve-remote --dir /data/team-kb --port 8081 \
+  --hub-pubkey /keys/hub-public.pem --audit-file /audit/kb.jsonl
+# 容器内也可直接执行：
+node /app/lib/cli.js serve-remote --dir /data/team-kb --port 8081 \
+  --hub-pubkey /keys/hub-public.pem --audit-file /audit/kb.jsonl
+```
+
+服务监听 `0.0.0.0`，MCP 地址是 `/mcp`，使用 SDK 的无状态 Streamable HTTP 传输：POST 返回 JSON，不分配会话 ID，GET/DELETE 返回 405。Hub 配置 `DSH_TEAM_KB_UPSTREAM=http://memwiki:8081/mcp`，向用户提供 `/_hub/kb/mcp`。memwiki 只放在 Hub 可达的内部网络；Hub 每次转发时丢弃客户端自带的身份头，并按当前会话签发新头。
+
+每个 HTTP 请求都必须携带 `X-Dsh-Team-Identity: v1.<payload_base64url>.<signature_base64url>`。签名算法为 Ed25519，输入为 `v1.<payload_base64url>`，公钥文件为 SPKI PEM；payload 必须包含 `v=1`、`sub`、`name`、`src`、`kind`、`roles`、`inst="kb"`、`iat`、`exp`、`jti`。`kind` 为 `member` / `external` / `system`，`src` 为 `uac` / `local` / `system`；有效期最长 60 秒，允许 5 秒时钟偏差。缺失、重复、多值、编码非法、验签失败、过期及实例不符均返回 401；错误和审计不包含身份头原文。`jti` 只用于关联，不做重放去重，遵循 Hub 契约。
+
+- 页头 `visibility: company` 是默认值（老页面未声明时同样按 company）；显式 `visibility: all` 才对外部成员开放。维护人可以通过 `memwiki_write` 的 `meta` 设置该字段。
+- 公司成员与系统账号可读全部页面；外部成员只能读 all 页面。直接读取、搜索、context、反向链接都会过滤权限；生成的全库 index/log 与内部诊断工具不向外部成员开放。公开页面中指向内部页面的双链会隐藏，公开正文自身的业务内容仍由维护人审核后发布。
+- `kb-maintainer`、`admin`、`super_admin` 可直接写入；其他角色的所有修改（包括 write、merge、move、delete、restore、verify、remember、lint fix、feedback 修改）均生成独立的 `inbox/proposals/<UTC日期>/<随机ID>` 待审页，返回“已提交待审”。提议保留完整工具参数与 rev。维护人用现有 read/write/merge/delete 工具审核、应用并归档；应用时仍须检查最新 rev。提议默认 company。
+- 远程模式不注册任何 `memwiki_secret_*` 工具。写入作者、来源、git 作者均来自签名身份，忽略工具参数伪造的作者；`updated_by` 为 `sub`，`updated_by_name` 为 `name`，sources 包含 `hub:<sub> (<name>)`。维护人的审核提交记审核人，提议页保留原提议人。
+- 同一服务的请求串行完成修改、索引、日志和 git 提交，并保留跨进程文件锁与 rev 冲突检查；长操作会续租文件锁。远程进程在每次工具调用时刷新磁盘内容，不启动个人模式的后台文件监听提交。
+- 审计写到库外 JSONL：`kb.write` / `kb.propose`，包含时间、作者、目标页和工具。写入前记 attempt，完成后记 success/error；只有 attempt 表示中断或未完成，需检查库与 git。日志不可写时拒绝开始修改，不记录正文和身份头。默认路径为 `<库绝对路径>.audit.jsonl`，容器部署建议显式挂载 `/audit` 并设置 `--audit-file`。审计路径不能通过符号链接落回库内。
+
+memwiki 端的库目录、端口、公钥与审计路径都通过上述命令行参数设置，**无需新增环境变量**。现有 `MEMWIKI_GIT=0` 可关闭自动提交（团队部署应保留默认开启），`MEMWIKI_GIT_PUSH=1` 可选开启推送；Hub 的 `DSH_TEAM_KB_UPSTREAM` 设置在 Hub 容器。挂载 `/data` 与 `/audit` 为持久可写卷，`/keys/hub-public.pem` 为只读文件；memwiki 不需要 Hub 私钥或实例令牌。
+
 ## 配置项
 
 库目录优先级：`--dir` > `MEMWIKI_DIR` > `~/.dsh/dsh-memwiki.json` 的 `dir` > `~/memwiki`。自动推送：命令行 > 环境变量 > DSH 设置文件的 `autoPush` > 库设置 > 默认关闭；其他设置仍是命令行 > 环境变量 > 库设置 > 默认值。
