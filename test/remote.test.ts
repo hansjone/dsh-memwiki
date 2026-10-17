@@ -324,3 +324,14 @@ test('maintainers can apply and remove inbox proposals with original revision pr
   assert.equal(again.isError, true)
   assert.match(again.text, /CONFLICT/)
 })
+
+test('an external member sees the id of their own proposal even though the proposal page is company-only', async t => {
+  const { client, dir } = await fixture(t)
+  const outsider = await client(identity({ sub: 'u_ext', name: 'Ext', kind: 'external' }))
+  const result = await call(outsider, 'memwiki_remember', { text: 'external contribution' })
+  assert.equal(result.isError, false, result.text)
+  const id = /提议 id：(inbox\/proposals\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+)/.exec(result.text)?.[1]
+  assert.ok(id, result.text)
+  const page = (await new Store(config(dir)).list()).find(p => p.id === id)
+  assert.ok(page); assert.equal(page.meta.visibility, 'company'); assert.equal(page.meta.updated_by, 'u_ext')
+})

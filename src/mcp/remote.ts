@@ -169,7 +169,11 @@ export function createRemoteHandler(wiki: Memwiki, options: RemoteOptions) {
             }
             if (identity.kind === 'external') {
               if (result.isError) return reply('ERROR：操作失败或无权读取；请检查参数和页面版本', true)
-              return { ...result, content: result.content.map(c => c.type === 'text' ? { ...c, text: scoped.redact(c.text) } : c) }
+              const redacted = result.content.map(c => c.type === 'text' ? { ...c, text: scoped.redact(c.text) } : c)
+              // The submitter always learns the id of their own proposal; it is not a secret. Added after
+              // redaction because the proposal page itself stays company-visible and would be masked.
+              if (proposal) redacted.push({ type: 'text', text: `提议 id：${proposal}` })
+              return { ...result, content: redacted }
             }
             return result
           }
