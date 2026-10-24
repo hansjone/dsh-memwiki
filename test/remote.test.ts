@@ -91,11 +91,15 @@ test('every HTTP request rejects missing, duplicate, invalid, expired and wrong-
 })
 
 test('external users cannot see company pages through direct/alias reads, search, context or backlinks', async t => {
-  const { client, page } = await fixture(t)
+  const { client, page, wiki, dir } = await fixture(t)
   await page('topics/company-private', undefined, 'shared-needle 内部正文 [[topics/public]]', { aliases: ['InternalAlias'] })
   await page('topics/public', 'all', 'shared-needle 外部正文 [[topics/company-private|内部链接]]')
   const external = await client(identity({ kind: 'external' }))
-  for (const ref of ['topics/company-private', 'InternalAlias', 'index', 'log', '_guide']) {
+  const month = (await wiki.log(1))[0].at.slice(0, 7)
+  // Generated logs stay internal even when externally edited to contain public frontmatter.
+  const logFile = path.join(dir, 'log', `${month}.md`)
+  await writeFile(logFile, '---\nvisibility: all\n---\ncompany-private 内部正文\n')
+  for (const ref of ['topics/company-private', 'InternalAlias', 'index', 'log', `log/${month}`, `log/${month}.md`, '_guide']) {
     const result = await call(external, 'memwiki_read', { page: ref })
     assert.equal(result.isError, true, ref)
     assert.doesNotMatch(result.text, /company-private|内部正文|InternalAlias/)

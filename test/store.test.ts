@@ -55,7 +55,7 @@ test('create, replace, append, edit and meta maintain provenance and accurate to
   assert.deepEqual(patched.page.meta.aliases, [])
   await assert.rejects(store.write({ kind: 'meta', id: first.page.id, rev: patched.page.rev, meta: { title: null } }, ctx), code('INVALID_META'))
   assert.equal((await store.get(first.page.id)).rev, patched.page.rev)
-  assert.deepEqual((await readdir(dir)).filter(n => ['log.md', 'index.md', '.git'].includes(n)), [])
+  assert.deepEqual((await readdir(dir)).filter(n => ['log', 'index.md', '.git'].includes(n)), [])
 })
 
 test('edit requires exactly one occurrence, including overlapping matches', async t => {
@@ -217,7 +217,7 @@ test('list excludes special/internal files, resolve honors tiers, cache refreshe
   // Deliberately duplicate a title to exercise resolver ambiguity despite the create guard.
   await create('topics/B', 'body', { title: 'Other', aliases: ['shared'] }, true)
   await create('topics/C', 'body', { aliases: ['shared'] })
-  for (const rel of ['index.md', 'log.md', 'topics/_private.md', '.trash/x.md', '.memwiki/x.md', '.obsidian/x.md', '.git/x.md', 'node_modules/x.md']) {
+  for (const rel of ['index.md', 'log/2026-10.md', 'topics/_private.md', '.trash/x.md', '.memwiki/x.md', '.obsidian/x.md', '.git/x.md', 'node_modules/x.md']) {
     await mkdir(path.dirname(path.join(dir, rel)), { recursive: true })
     await writeFile(path.join(dir, rel), 'special')
   }

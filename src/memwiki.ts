@@ -8,7 +8,7 @@ import type {
 import { MemwikiError } from './types.ts'
 import { Store } from './core/store.ts'
 import { createResolver, extractLinks, convertMarkdownLinks } from './core/links.ts'
-import { appendLog, readLog } from './core/log.ts'
+import { appendLog, readLog, logPath } from './core/log.ts'
 import { commit, hasRemote, listUncommitted, pullRebase, push } from './core/git.ts'
 import { scanSecrets } from './core/secrets.ts'
 import { idToRelPath, safeResolve } from './core/ids.ts'
@@ -234,9 +234,10 @@ export class Memwiki {
       page: opts.page,
       reason: opts.reason,
     }
-    this.watcher?.noteWrite('log.md')
+    const logRel = logPath(entry.at)
+    this.watcher?.noteWrite(logRel)
     await appendLog(this.config.dir, entry)
-    const paths = [...new Set([...opts.changedPaths, ...(indexChanged ? ['index.md'] : []), 'log.md'])]
+    const paths = [...new Set([...opts.changedPaths, ...(indexChanged ? ['index.md'] : []), logRel])]
     this.noteOwnWrite(paths, opts.pages)
     const sha = await this.tryCommit(paths, {
       agent: opts.agent,
@@ -311,7 +312,7 @@ export class Memwiki {
     brokenLinks: string[]
     recordedDaysAgo: number
   }> {
-    const page = ref.startsWith('_') || ['index', 'log'].includes(ref.toLowerCase())
+    const page = ref.startsWith('_') || ref.toLowerCase() === 'index' || /^log\//i.test(ref)
       ? await this.store.readSpecial(ref).catch(async () => this.store.resolve(ref))
       : await this.store.resolve(ref)
     const record = this.records.get(this.key(page.id)) ?? this.toRecord(page, createResolver(
@@ -329,13 +330,13 @@ export class Memwiki {
   async write(op: WriteOp, ctx: WriteContext): Promise<MutationResult<WriteResult>> {
     const result = await this.observed(ctx.agent, op.id, () => this.store.write(op, ctx))
     if (op.kind === 'create' && op.force) await this.signal('FORCE_CREATE', ctx.agent, { page: op.id })
-    const action = op.kind === 'create' ? '新建' : '更新'
+    const action = (op.kind === 'create' ? '新建' : '更新') + (op.verify !== undefined ? '并核实' : '')
     const commitSha = await this.afterMutation({
       changedPaths: result.changedPaths,
       pages: [result.page],
       action,
       page: result.page.id,
-      reason: ctx.reason,
+      reason: op.verify !== undefined ? `${ctx.reason}；核实依据：${op.verify}` : ctx.reason,
       agent: ctx.agent,
     })
     return { result, commitSha }
@@ -531,15 +532,17 @@ export class Memwiki {
     if (fixed || issues.some(i => i.code === 'uncommitted')) {
       for (const page of pages) this.upsertRecord(page)
       const indexChanged = await this.rewriteIndexMd()
-      this.watcher?.noteWrite('log.md')
-      await appendLog(this.config.dir, {
+      const entry: LogEntry = {
         at: nowIso(),
         agent,
         action: 'lint',
         reason: opts.fix ? `自动修复 ${fixed} 项` : '体检',
-      })
+      }
+      const logRel = logPath(entry.at)
+      this.watcher?.noteWrite(logRel)
+      await appendLog(this.config.dir, entry)
       if (indexChanged) changedPaths.add('index.md')
-      changedPaths.add('log.md')
+      changedPaths.add(logRel)
       try {
         const dirty = await listUncommitted(this.config.dir)
         for (const p of dirty) changedPaths.add(p)

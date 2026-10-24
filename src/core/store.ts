@@ -10,6 +10,7 @@ import { withLock } from './lock.ts'
 import { atomicWrite } from './fs.ts'
 import { contentEligible, similarPages } from '../search/similarity.ts'
 import { actorSource, remoteActor } from './actor.ts'
+import { MAX_BODY_BYTES } from './limits.ts'
 
 const ignored = new Set(['.trash', '.memwiki', '.obsidian', '.git', 'node_modules'])
 const STRUCTURE_LOCK = ':store-structure'
@@ -170,20 +171,23 @@ export class Store {
     const actor = remoteActor.getStore()
     if (actor) ctx = { ...ctx, agent: actor.sub }
     const next: PageMeta = { ...meta, updated: nowIso(), updated_by: ctx.agent }
+    if (next.sources !== undefined && (!Array.isArray(next.sources) || !next.sources.every(s => typeof s === 'string'))) throw new MemwikiError('INVALID_META', 'sources 必须是字符串数组', { errors: [{ field: 'sources', reason: '必须是字符串数组' }] })
     if (actor) {
-      next.sources = [...new Set([...(Array.isArray(next.sources) ? next.sources : []), actorSource(actor)])]
+      next.sources = [...(next.sources ?? []), actorSource(actor)]
       next.updated_by_name = actor.name
       next.visibility ??= 'company'
     }
     if (ctx.source) {
-      if (next.sources !== undefined && (!Array.isArray(next.sources) || !next.sources.every(s => typeof s === 'string'))) throw new MemwikiError('INVALID_META', 'sources 必须是字符串数组', { errors: [{ field: 'sources', reason: '必须是字符串数组' }] })
-      next.sources = [...new Set([...(next.sources ?? []), ctx.source])]
+      next.sources = [...(next.sources ?? []), ctx.source]
     }
     if (id.startsWith('projects/') && id.split('/').length > 2 && !next.project) next.project = id.split('/')[1]
     return next
   }
 
   private prepare(meta: PageMeta, body: string): string {
+    if (Array.isArray(meta.sources) && meta.sources.every(s => typeof s === 'string')) {
+      meta = { ...meta, sources: [...new Set([...meta.sources].reverse())].reverse().slice(-10) }
+    }
     const raw = serializePage(meta, body)
     if (this.config.secretScan) {
       const findings = scanSecrets(raw)
@@ -202,6 +206,9 @@ export class Store {
 
   /** Applies a write under a page lock and atomic rename; rev conflicts include the current rev. */
   async write(op: WriteOp, ctx: WriteContext): Promise<WriteResult> {
+    if ((op.kind === 'create' || op.kind === 'replace' || op.kind === 'section') && typeof op.body !== 'string') {
+      throw new MemwikiError('INVALID_META', op.kind === 'section' ? 'section 需要 body' : 'create/replace 需要 body')
+    }
     const requested = this.ensurePageId(op.id)
     if (op.kind === 'append' && op.meta !== undefined && op.rev === undefined) {
       throw new MemwikiError('INVALID_META', 'append 修改页头需要 rev', { errors: [{ field: 'rev', reason: 'append 修改页头时必填' }] })
@@ -240,6 +247,15 @@ export class Store {
         meta.created = page!.meta.created
       }
       meta = this.updated(meta, id, ctx)
+      if (op.verify !== undefined) {
+        if (typeof op.verify !== 'string') throw new MemwikiError('INVALID_META', 'verify 必须是字符串')
+        meta.verified = localDate()
+        if (meta.status === 'stale') meta.status = 'active'
+      }
+      const bytes = Buffer.byteLength(body, 'utf8')
+      if (op.kind !== 'meta' && !/^meta\//i.test(id) && bytes > MAX_BODY_BYTES && bytes >= Buffer.byteLength(page?.body ?? '', 'utf8')) {
+        throw new MemwikiError('PAGE_TOO_LARGE', '正文超过 20 KB，请拆分为子页；缩小正文的写入仍可执行')
+      }
       const rel = idToRelPath(id)
       const raw = this.prepare(meta, body)
       if (op.kind === 'create' && !op.force && contentEligible({ id, meta, body })) {

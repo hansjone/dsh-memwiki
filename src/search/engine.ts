@@ -1,10 +1,11 @@
 import type { PageRecord, SearchEngine, SearchHit, SearchQuery } from '../types.ts'
 import { tokenize } from './tokenize.ts'
+import { isSpecialId } from '../core/ids.ts'
 
 const WEIGHTS = [4, 3, 2.5, 2, 1.5, 1]
 const compact = (text: string) => text.normalize('NFKC').toLowerCase().replace(/\s+/gu, '')
 const key = (id: string) => id.toLowerCase()
-const visible = (id: string) => !['index', 'log'].includes(key(id)) && !id.split('/').at(-1)!.startsWith('_')
+const visible = (id: string) => !isSpecialId(id)
 interface Field { counts: Map<string, number>; length: number }
 interface Indexed {
   record: PageRecord

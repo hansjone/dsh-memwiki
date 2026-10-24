@@ -4,6 +4,8 @@ import { contentEligible, contentFingerprint, jaccard, OVERLAP_THRESHOLD } from 
 import { factTokens } from './facts.ts'
 import { feedbackEntries } from '../core/feedback.ts'
 import { markdownPageLinks } from '../core/links.ts'
+import { MAX_BODY_BYTES } from '../core/limits.ts'
+import { isSpecialId } from '../core/ids.ts'
 
 const DAY = 86_400_000
 const text = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0
@@ -48,6 +50,7 @@ export function fixFor(issue: LintIssue, record: PageRecord): MetaPatch | undefi
 
 /** Checks parsed records without I/O; secrets are scanned only through the injected scanner. */
 export function lintRecords(records: PageRecord[], opts: LintOptions): LintIssue[] {
+  records = records.filter(r => !isSpecialId(r.id))
   const issues: LintIssue[] = []
   const incoming = new Set<string>()
   const names = new Map<string, Set<string>>()
@@ -80,7 +83,7 @@ export function lintRecords(records: PageRecord[], opts: LintOptions): LintIssue
     if (m.status !== 'stale' && opts.now.getTime() - Date.parse(checked) > opts.staleDays * DAY) {
       add('stale_candidate', r.id, `超过 ${opts.staleDays} 天未确认`, true)
     }
-    if (Buffer.byteLength(r.body, 'utf8') > 20 * 1024) add('oversized', r.id, '正文超过 20 KB，建议拆分')
+    if (!/^meta\//i.test(r.id) && Buffer.byteLength(r.body, 'utf8') > MAX_BODY_BYTES) add('oversized', r.id, '正文超过 20 KB，建议拆分')
     if (opts.scanSecrets) {
       const scanText = Object.entries(m).map(([name, value]) => `${name}: ${typeof value === 'string' ? value : JSON.stringify(value)}`).join('\n') + '\n---\n' + r.body
       const findings = opts.scanSecrets(scanText)

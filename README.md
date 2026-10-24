@@ -103,7 +103,7 @@ memwiki 端的库目录、端口、公钥与审计路径都通过上述命令行
 | `memwiki_remember` | 快速记入 inbox，并返回相关页面 |
 | `memwiki_move` | 改名/移动并改写链接 |
 | `memwiki_merge` | 合并到归属页，改写双链并直接删除源文件、迁移标题和别名；body/meta 可选，带目标 rev |
-| `memwiki_verify` | 核实后刷新 verified，stale 恢复 active，无需 rev |
+| `memwiki_verify` | 只核实旧页时刷新 verified，stale 恢复 active，无需 rev；写入时用 verify 参数顺带核实 |
 | `memwiki_feedback` | add/list/resolve：记录与处理按月反馈 |
 | `memwiki_usage` | 本地使用信号统计与零结果查询 Top 10 |
 | `memwiki_delete` / `memwiki_restore` | 回收站删除 / 恢复 |
@@ -135,7 +135,13 @@ dsh-memwiki install-skill [--target ...]
 
 ## 库的格式
 
-标准 Markdown + YAML 页头 + `[[双链]]`，状态只有 `active` / `stale`。页间引用使用双链；`[文字](相对路径.md)` 会被 lint 报 `markdown_link`，`fix: true` 按当前页目录将其转成双链，随后才参与反链、断链与 move/merge 改写。请先修复再移动或合并。MCP 的 meta 只接受对象，tags/aliases 使用字符串数组，append 正文用 text。目录约定见 [docs/DESIGN.md](docs/DESIGN.md) §2–§3。生成文件 `index.md`、`log.md` 勿手改。
+标准 Markdown + YAML 页头 + `[[双链]]`，状态只有 `active` / `stale`。页间引用使用双链；`[文字](相对路径.md)` 会被 lint 报 `markdown_link`，`fix: true` 按当前页目录将其转成双链，随后才参与反链、断链与 move/merge 改写。请先修复再移动或合并。MCP 的 meta 只接受对象，tags/aliases 使用字符串数组，append 正文用 text。目录约定见 [docs/DESIGN.md](docs/DESIGN.md) §2–§3。生成文件 `index.md`、`log/YYYY-MM.md` 勿手改。
+
+`create` / `replace` / `section` 必须显式传字符串 `body`，缺失报 `INVALID_META`；所有 MCP 工具拒绝未知参数并指出字段名。写入时可传 `verify: "核实依据"`，同次写入设置今天的 verified，stale 恢复 active，只记一条日志和一个 git 提交；刚写完的页面不要再单独调用 `memwiki_verify`。
+
+正文超过 20 KB（UTF-8 字节）报 `PAGE_TOO_LARGE` 并要求拆页；让正文变小的写入与 `meta/` 页面除外，meta 模式仍可修改超大页页头。sources 去重保留最新 10 条，新的在后。日志按月存放，只向文件末尾追加；`memwiki_log` 从最新月份往前读，够 limit 即停。日志 reason 与 git 提交说明超过 120 字保留前 120 字并加“…”（按 Unicode 字符计数）。
+
+旧库的日志需停止写入并备份后，手动运行一次 `node scripts/split-log.mjs <vaultDir>`：按月拆分并删除旧 `log.md`；运行时代码只读月度日志。
 
 ## 常见问题
 

@@ -137,7 +137,7 @@ test('merge validation failures change no pages, catalog, log or git history', a
   const { dir, wiki, create } = await fixture(t, true)
   const target = (await create('topics/c', '目标', 'safe\n')).result.page
   await create('topics/a', '来源', 'safe source\n')
-  const snapshot = async () => Promise.all(['topics/a.md', 'topics/c.md', 'index.md', 'log.md'].map(rel => readFile(path.join(dir, rel), 'utf8')))
+  const snapshot = async () => Promise.all(['topics/a.md', 'topics/c.md', 'index.md', `log/${localDate().slice(0, 7)}.md`].map(rel => readFile(path.join(dir, rel), 'utf8')))
   const before = await snapshot()
   const head = (await exec('git', ['rev-parse', 'HEAD'], { cwd: dir })).stdout
   for (const from of [['topics/c'], ['topics/a', 'missing'], [], ['topics/a', '来源']]) {

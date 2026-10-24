@@ -21,10 +21,10 @@ export function relPathToId(rel: string): string {
   return normalizeId(normalized.slice(0, -3))
 }
 
-/** Whether the filename is index, log, or starts with an underscore. */
+/** Generated index/log paths and underscore-prefixed files are special pages. */
 export function isSpecialId(id: string): boolean {
   const name = normalizeId(id).split('/').at(-1)!.toLowerCase()
-  return name === 'index' || name === 'log' || name.startsWith('_')
+  return name === 'index' || id.split('/')[0].toLowerCase() === 'log' || name.startsWith('_')
 }
 
 const contains = (root: string, target: string) => {

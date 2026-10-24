@@ -67,7 +67,8 @@ function readableWiki(wiki: Memwiki, identity: TeamIdentity) {
       }
       if (key === 'read') return async (ref: string) => {
         if (identity.kind !== 'external') return wiki.read(ref)
-        if (['index', 'log'].includes(ref.toLowerCase().replace(/\.md$/i, ''))) throw new MemwikiError('NOT_FOUND', '页面不存在或无权读取')
+        const id = ref.toLowerCase().replace(/\.md$/i, '')
+        if (id === 'index' || /^log(?:\/|$)/.test(id)) throw new MemwikiError('NOT_FOUND', '页面不存在或无权读取')
         const match = resolve(ref)
         if (match && 'ambiguous' in match) throw new MemwikiError('AMBIGUOUS', '可读页面引用不唯一')
         const result = await wiki.read(match && 'id' in match ? match.id : ref)

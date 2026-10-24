@@ -3,3 +3,4 @@
 # Obsidian per-device workspace state
 .obsidian/workspace*.json
 .obsidian/cache
+.obsidian/graph.json

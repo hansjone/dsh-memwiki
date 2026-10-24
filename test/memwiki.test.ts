@@ -4,6 +4,8 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
+import { logPath } from '../src/core/log.ts'
+import { nowIso, localDate } from '../src/core/page.ts'
 import { initVault } from '../src/core/vault.ts'
 import { Memwiki } from '../src/memwiki.ts'
 import { temporary, config } from './helpers.ts'
@@ -36,10 +38,36 @@ test('full write flow: create, search, index, log, git commit', async t => {
   assert.ok(hits.some(h => h.id === 'topics/编码'))
   const index = await readFile(path.join(dir, 'index.md'), 'utf8')
   assert.match(index, /topics\/编码/)
-  const log = await readFile(path.join(dir, 'log.md'), 'utf8')
+  const log = await readFile(path.join(dir, logPath(nowIso())), 'utf8')
   assert.match(log, /新建.*topics\/编码/)
   const { stdout } = await exec('git', ['log', '-1', '--format=%s'], { cwd: dir })
   assert.match(stdout, /\[codex\] 新建/)
+})
+
+test('write with verification updates the date with one log and one commit; descriptions truncate', async t => {
+  const { dir, wiki } = await openVault(t)
+  const count = async () => Number((await exec('git', ['rev-list', '--count', 'HEAD'], { cwd: dir })).stdout.trim())
+  const before = await count()
+  const created = await wiki.write({ kind: 'create', id: 'topics/verified', meta: { title: '核实页', summary: '记录核实结果', status: 'stale' }, body: '原文\n', verify: '对照代码' }, { agent: 'codex', reason: '新建内容' })
+  assert.equal(created.result.page.meta.verified, localDate())
+  assert.equal(created.result.page.meta.status, 'active')
+  assert.equal(await count(), before + 1)
+  assert.equal((await wiki.log()).length, 1)
+  assert.equal((await wiki.log())[0].action, '新建并核实')
+  assert.match((await wiki.log())[0].reason, /对照代码/)
+  const written = await wiki.write({ kind: 'replace', id: created.result.page.id, rev: created.result.page.rev, body: '核实后的正文\n', verify: '' }, { agent: 'codex', reason: '😀'.repeat(130) })
+  assert.equal(written.result.page.meta.verified, localDate())
+  assert.equal(await count(), before + 2)
+  const logs = await wiki.log()
+  assert.equal(logs.length, 2)
+  assert.equal(logs[0].action, '更新并核实')
+  assert.equal(logs[0].reason, '😀'.repeat(120) + '…')
+  const message = (await exec('git', ['log', '-1', '--format=%s'], { cwd: dir })).stdout.trim()
+  assert.equal([...message].length, 121)
+  assert.ok(message.endsWith('…'))
+  const changed = (await exec('git', ['diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'], { cwd: dir })).stdout
+  assert.match(changed, /log\/\d{4}-\d{2}\.md/)
+  assert.equal((await exec('git', ['status', '--porcelain'], { cwd: dir })).stdout, '')
 })
 
 test('move rewrites links and updates search', async t => {

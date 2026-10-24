@@ -10,7 +10,7 @@ import { SecretStore } from '../secrets/store.ts'
 const INSTRUCTIONS = `共享记忆 wiki 规则：
 1. 任务开始调用 memwiki_context；写入前先 memwiki_search。
 2. 一个事实一个归属；纠正优先于补充，只写当前正确说法。
-3. 页面不写凭据值，只写 secret:<名字>；核实后调用 memwiki_verify。
+3. 页面不写凭据值，只写 secret:<名字>；写入时用 verify 参数顺带核实，旧页仅核实时用 memwiki_verify。
 4. CONFLICT 时重新 memwiki_read，在最新 rev 上再写。
 5. 拿不准归属用 memwiki_remember 进 inbox；merge 直接删除源文件、迁移标题/别名并改写双链；先 lint fix 将相对 Markdown 页面链接转为双链；禁止改写 git 历史。
 细则见 _guide；任务开始若没读过就 memwiki_read _guide；工具不好用时用 memwiki_feedback 记下。`
@@ -61,17 +61,22 @@ export interface ServerOptions {
 /** Builds an MCP server bound to an open Memwiki instance (§8.1). */
 export function createMemwikiServer(wiki: Memwiki, secrets?: SecretStore, options: ServerOptions = {}): McpServer {
   const server = new McpServer(
-    { name: 'memwiki', version: '0.3.0' },
+    { name: 'memwiki', version: '0.4.0' },
     { instructions: INSTRUCTIONS, capabilities: { tools: {}, prompts: {} } },
   )
 
   const registerTool = <Shape extends z.ZodRawShape>(name: string,
     config: { description: string; inputSchema: Shape },
     callback: (args: z.output<z.ZodObject<Shape>>) => Promise<CallToolResult>,
-  ) => server.registerTool<z.ZodRawShape, Shape>(name, config, (async (args: unknown) => {
+  ) => server.registerTool<z.ZodRawShape, z.ZodObject<Shape>>(name, { ...config, inputSchema: z.object(config.inputSchema).strict() }, (async (args: unknown) => {
+    const input = args as Record<string, unknown>
+    // Validate before remote proposal interception as well as before direct writes.
+    if (name === 'memwiki_write' && ['create', 'replace', 'section'].includes(input.mode as string) && typeof input.body !== 'string') {
+      return formatError(new MemwikiError('INVALID_META', input.mode === 'section' ? 'section 需要 body' : 'create/replace 需要 body'))
+    }
     const run = async () => callback(args as z.output<z.ZodObject<Shape>>)
     return options.runTool ? options.runTool(name, args as Record<string, unknown>, run) : run()
-  }) as ToolCallback<Shape>)
+  }) as ToolCallback<z.ZodObject<Shape>>)
 
   if (!options.remote) {
     const secretStore = secrets ?? new SecretStore({ vaultDir: wiki.config.dir })
@@ -171,6 +176,8 @@ export function createMemwikiServer(wiki: Memwiki, secrets?: SecretStore, option
       'section 替换某一节的内容（heading，可写 父标题/子标题）；edit 精确替换一句（old 必须在页面里恰好出现一次）；',
       'replace 整页重写；meta 只改页头字段（如 status、tags、verified）。不要写密钥、密码、token，写"去哪里拿"。',
       '任何模式都可以顺手改 title/summary（append 改页头时必须带 rev）；顶层 title/summary 优先于 meta 中的同名字段。',
+      'create/replace/section 必须传字符串 body（允许空字符串）；未知参数直接报错。verify 传核实依据，同次写入刷新 verified，刚写完不要再调 memwiki_verify。',
+      '正文上限 20 KB，超限请拆页；缩小正文和 meta/ 页面不受此限。sources 去重保留最新 10 条；reason 超过 120 字截断。',
     ].join(''),
     inputSchema: {
       page: z.string().describe('页面 ID，如 projects/netx/发布流程、topics/PowerShell 中文乱码；非 create 时也可以是标题或别名'),
@@ -187,6 +194,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets?: SecretStore, option
       force: z.boolean().optional().describe('create：确实是不同主题时跳过相似拦截；必须写明 reason'),
       reason: z.string().describe('为什么写/改，会记进日志和 git 提交'),
       source: z.string().optional().describe('依据，如 session:claude/<会话ID>、file:netx/README.md、url:https://...'),
+      verify: z.string().optional().describe('本次核实依据；同次写入把 verified 设为今天，stale 恢复 active，只记一条日志和一个提交'),
     },
   }, async (args) => {
     try {
@@ -203,11 +211,11 @@ export function createMemwikiServer(wiki: Memwiki, secrets?: SecretStore, option
             const errors = ['title', 'summary'].filter(field => !args[field as 'title' | 'summary']).map(field => ({ field, reason: 'create 时必填且不能为空' }))
             throw new MemwikiError('INVALID_META', errors.map(e => `${e.field} ${e.reason}`).join('；'), { errors })
           }
-          op = { kind: 'create', id, meta: { ...meta, title: args.title, summary: args.summary }, body: args.body ?? '', force: args.force }
+          op = { kind: 'create', id, meta: { ...meta, title: args.title, summary: args.summary }, body: args.body!, force: args.force }
           break
         case 'replace':
           if (!args.rev) throw new MemwikiError('INVALID_META', 'replace 需要 rev')
-          op = { kind: 'replace', id, rev: args.rev, body: args.body ?? '', meta }
+          op = { kind: 'replace', id, rev: args.rev, body: args.body!, meta }
           break
         case 'append':
           if (args.text === undefined) throw new MemwikiError('INVALID_META', 'append 需要 text')
@@ -219,7 +227,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets?: SecretStore, option
           break
         case 'section':
           if (!args.rev || !args.heading) throw new MemwikiError('INVALID_META', 'section 需要 rev 和 heading')
-          op = { kind: 'section', id, rev: args.rev, heading: args.heading, body: args.body ?? '', meta }
+          op = { kind: 'section', id, rev: args.rev, heading: args.heading, body: args.body!, meta }
           break
         case 'meta':
           if (!args.rev || !meta) throw new MemwikiError('INVALID_META', 'meta 需要 rev 和页头字段（meta 或 title/summary）')
@@ -231,7 +239,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets?: SecretStore, option
         const page = await wiki.read(op.id)
         op = { ...op, id: page.page.id }
       }
-      const { result } = await wiki.write(op, ctx)
+      const { result } = await wiki.write({ ...op, verify: args.verify }, ctx)
       return text(`写入成功。\n页面：[[${result.page.id}]]\nrev：${result.page.rev}`)
     } catch (e) { return formatError(e) }
   })
@@ -267,7 +275,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets?: SecretStore, option
   })
 
   registerTool('memwiki_verify', {
-    description: '读到并核实过页面后调用：verified 设为本地今天，stale 恢复 active；不需要 rev，不修改正文。',
+    description: '用于只核实不改内容的旧页面：verified 设为本地今天，stale 恢复 active；不需要 rev。刚写完的页面不要再调 verify，写的时候用 verify 参数传核实依据。',
     inputSchema: { page: z.string(), note: z.string().optional() },
   }, async ({ page, note }) => {
     try {
@@ -360,7 +368,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets?: SecretStore, option
   })
 
   registerTool('memwiki_log', {
-    description: '最近的变更日志：谁、什么时候、改了哪页、为什么。',
+    description: '最近的变更日志：从 log/YYYY-MM.md 最新月份往前读取，够 limit 就停；返回谁、什么时候、改了哪页、为什么（reason 超过 120 字截断并加 …）。',
     inputSchema: {
       limit: z.number().int().positive().optional().describe('条数，默认 20'),
     },
@@ -381,7 +389,7 @@ export function createMemwikiServer(wiki: Memwiki, secrets?: SecretStore, option
   }, async () => ({ messages: [{ role: 'user' as const, content: { type: 'text' as const, text: `请整理记忆库：
 1. 先 memwiki_read _guide，调用 memwiki_lint；纠正优先于补充，页面只写当前正确说法。
 2. 对 overlap / fact_repeat 核对来源并判断事实归属；用 memwiki_merge 或 memwiki_write edit 收敛到一页，其余改为链接。删除内容前确认已在归属页存在；不要机械删除正常的链接引用。
-3. 对 stale 页核实：能核实就 memwiki_verify；不能核实就在页面标注待核实，保留 stale。
+3. 对 stale 页核实：只核实旧页用 memwiki_verify；同时修改则在 memwiki_write 传 verify 依据，刚写完不要再调 verify；不能核实就标注待核实，保留 stale。
 4. 搜索相关页后归档 inbox，确认信息已归入再移除原条目。
 5. 用 memwiki_feedback action=list 与 memwiki_usage 汇总 open 反馈及使用信号；只汇报不改代码。工具问题、规则不清或有价值的搜索缺口用 feedback 留下可复现的场景。
 6. 再跑 lint，汇报删并修改摘要和剩余不确定项。禁止改写 git 历史。` } }] }))

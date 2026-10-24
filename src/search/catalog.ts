@@ -1,10 +1,11 @@
 import type { ContextOptions, PageRecord } from '../types.ts'
 import { nowIso } from '../core/page.ts'
+import { isSpecialId } from '../core/ids.ts'
 
 const ORDER = ['user', 'rules', 'projects', 'topics', 'howto', 'decisions', 'reference', 'meta']
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0
 const oneLine = (text: string) => text.replace(/[\r\n]+/gu, ' ').trim()
-const visible = (r: PageRecord) => !['index', 'log'].includes(r.id.toLowerCase()) && !r.id.split('/').at(-1)!.startsWith('_')
+const visible = (r: PageRecord) => !isSpecialId(r.id)
 const top = (r: PageRecord) => r.id.includes('/') ? r.id.split('/')[0] : '(root)'
 const newest = (a: PageRecord, b: PageRecord) => (Date.parse(b.meta.updated) || 0) - (Date.parse(a.meta.updated) || 0) || compare(a.id, b.id)
 

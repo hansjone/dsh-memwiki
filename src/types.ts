@@ -99,13 +99,14 @@ export interface WriteContext {
 export type MetaPatch = { [K in keyof PageMeta]?: PageMeta[K] | null }
 
 /** Write operations (§4.1). Append metadata patches require rev; body-only appends do not. */
-export type WriteOp =
+export type WriteOp = (
   | { kind: 'create'; id: string; meta: MetaPatch & { title: string; summary: string }; body: string; force?: boolean }
   | { kind: 'replace'; id: string; rev: string; body: string; meta?: MetaPatch }
   | { kind: 'append'; id: string; text: string; section?: string; rev?: string; meta?: MetaPatch }
   | { kind: 'edit'; id: string; rev: string; old: string; new: string; meta?: MetaPatch }
   | { kind: 'section'; id: string; rev: string; heading: string; body: string; meta?: MetaPatch }
   | { kind: 'meta'; id: string; rev: string; meta: MetaPatch }
+) & { /** Verification evidence recorded in the same mutation. */ verify?: string }
 
 export interface WriteResult {
   page: Page
@@ -178,6 +179,7 @@ export type ErrorCode =
   | 'INVALID_ID'
   | 'OUT_OF_VAULT'
   | 'INVALID_META'
+  | 'PAGE_TOO_LARGE'
   | 'SECRET_DETECTED'
   | 'LOCKED'
   | 'NOT_A_VAULT'
@@ -306,7 +308,7 @@ export interface LintOptions {
   overlapThreshold?: number
 }
 
-/** One `log.md` entry (§4.4). */
+/** One monthly log entry (§4.4). */
 export interface LogEntry {
   /** ISO datetime with offset. */
   at: string

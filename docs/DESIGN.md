@@ -10,7 +10,7 @@
 2. **渐进披露。** 会话开始只给一份有预算的精简目录（每页一行摘要）；需要时再搜索、再读全文。
 3. **来源和新旧可见。** 每页记录谁、何时写的、依据什么；读出时带"多久前记录"，过时内容标记而不是静默删除。
 4. **多写入方安全。** 版本号乐观并发、页面级锁、原子写、git 留痕、回收站。
-5. **人类优先的格式。** 标准 Markdown + YAML 页头 + `[[双链]]`，Obsidian 打开即用；生成文件（`index.md`、`log.md`）人也能读。
+5. **人类优先的格式。** 标准 Markdown + YAML 页头 + `[[双链]]`，Obsidian 打开即用；生成文件（`index.md`、`log/YYYY-MM.md`）人也能读。
 6. **零外部服务。** 纯本地文件 + Node；检索自带，不依赖向量库或模型。
 
 ## 2. 库（vault）结构
@@ -20,7 +20,7 @@
   memwiki.json      库标记与库级设置（schemaVersion 等），见 §7
   _guide.md         写作规范（库创建时从模板生成，用户可改）
   index.md          总目录（生成，勿手改）
-  log.md            变更日志（追加写，勿手改）
+  log/YYYY-MM.md    月度变更日志（只向文件末尾追加，勿手改）
   user/             用户画像与偏好
   rules/            给 AI 的工作规则（纠正、确认过的做法）
   projects/<name>/  各项目知识，<name> = 项目目录名（git 根目录名）
@@ -35,7 +35,7 @@
 ```
 
 - 目录是约定，不是强制：任何 `.md` 文件都是页面。`.trash/`、`.memwiki/`、`.obsidian/`、`.git/` 以及 `node_modules/` 不扫描。
-- **特殊文件**：`index.md`、`log.md` 是生成文件，不作为页面参与检索和目录；`_guide.md` 可被 `read` 读取，但不进目录和检索。文件名以 `_` 开头的都按这个规则处理。
+- **特殊文件**：`index.md`、`log/` 下的月度文件是生成文件，不作为页面参与检索、目录和 lint；`_guide.md` 可被 `read` 读取，但不进目录和检索。文件名以 `_` 开头的都按这个规则处理。
 
 ## 3. 页面
 
@@ -78,7 +78,7 @@ project: myapp
 | `created` / `updated` | 是 | 写入方自动维护；`updated` 带时区的 ISO 时间 |
 | `updated_by` | 是 | 最后写入的 agent ID（`dsh` `claude` `codex` `cursor` `human` `external`…） |
 | `verified` | 否 | 最后一次确认内容仍然正确的日期 |
-| `sources` | 否 | 依据：`session:<agent>/<id>`、`file:<路径>`、`url:<地址>`、`commit:<仓库>@<sha>` |
+| `sources` | 否 | 依据：`session:<agent>/<id>`、`file:<路径>`、`url:<地址>`、`commit:<仓库>@<sha>`；所有写入路径去重保留最新 10 条，新的在后（含远程 actor 来源） |
 | `project` | 否 | 归属项目名；`projects/<name>/` 下的页面缺省即为 `<name>` |
 | `pinned` | 否 | `true` 时总是进精简目录 |
 
@@ -111,17 +111,23 @@ project: myapp
 | `section` | 是 | 替换某个标题（按标题文字匹配，可写 `父标题/子标题`）下的内容，直到同级或更高级标题为止；标题不存在时追加为新的二级标题 |
 | `meta` | 是 | 只改页头字段（合并，`null` 表示删除该字段） |
 
-每次写入都带 `WriteContext { agent, reason, source? }`：`agent` 写进 `updated_by`，`reason` 进 `log.md` 和 git 提交信息，`source` 追加进 `sources`（去重）。
+每次写入都带 `WriteContext { agent, reason, source? }`：`agent` 写进 `updated_by`，`reason` 进月度日志和 git 提交信息，`source` 追加进 `sources`（去重后保留最新 10 条）。重复来源再次出现时更新到末尾。
+
+create/replace/section 必须显式带字符串 body（允许空字符串），缺失时报 `INVALID_META`，提示“create/replace 需要 body”或“section 需要 body”。所有 MCP 工具参数对象均为严格模式，未知字段直接报错并指出字段名；meta 字段内部仍按页头扩展字段契约保留未知键。
+
+WriteOp / memwiki_write 可选 `verify: string` 核实依据。同次写入设置 verified 为本地今天、stale 恢复 active；动作“新建并核实”或“更新并核实”，reason 附核实依据，只生成一条日志、一次 git 提交。刚写完不要再调用 memwiki_verify。
+
+create/replace/append/edit/section 计算后的正文超过 20 × 1024 UTF-8 字节时报 `PAGE_TOO_LARGE` 并提示拆分；本次正文比原文更小时放行，即使仍超限。meta/ 下页面不受限，meta 模式可继续修正超大页页头。
 
 所有模式均可合并 meta patch；append 修改页头时必须带 rev，纯正文追加仍无需 rev。section 的 body 开头若有与目标同名的 Markdown 标题行，先移除该行，保留页面原有标题。
 
 #### 新建相似页拦截（0.2.0）
 
-create 在结构锁和页面锁内读取最新页面集合，准备并校验新内容后、落盘前检查相似页。inbox、meta 和特殊页不参与；remember 保持直接写 inbox，不拦截。force 仍执行 ID/元数据/敏感扫描等全部校验。
+create 在结构锁和页面锁内读取最新页面集合，准备并校验新内容后、落盘前检查相似页。inbox、meta 和特殊页不参与；remember 保持直接写 inbox，不拦截。force 仍执行 ID/元数据/正文大小/敏感扫描等全部校验。
 
 比较使用标题、摘要和正文前 2000 个字符，不依赖模型或词库。NFKC、转小写、只保留字母数字后：标题二元组 Jaccard 为 T，摘要二元组 Jaccard 为 S；正文去双链、Markdown 链接及标题行后，双方各至少 40 字，按五字符 shingle Jaccard 得 B，否则 B=0。相似度是 `max(0.8T+0.2S, 0.9B, 0.45(0.8T+0.2S)+0.55B)`，范围 [0,1]。这是可解释的字符重叠机制，并不判断语义真伪。
 
-分数达到 `similarCreateThreshold` 且大于 0 时返回 `SIMILAR_EXISTS`，details.candidates 最多 3 条，按分数排序，每条含 id/title/summary/similarity。提示“更新已有页面；确实是不同主题时带 force 并写明理由”。`force: true` 只跳过相似检查，必须有非空 reason，原文进日志；拦截和后续强制创建分别记使用信号。
+分数达到 `similarCreateThreshold` 且大于 0 时返回 `SIMILAR_EXISTS`，details.candidates 最多 3 条，按分数排序，每条含 id/title/summary/similarity。提示“更新已有页面；确实是不同主题时带 force 并写明理由”。`force: true` 只跳过相似检查，必须有非空 reason，按日志长度限制记录；拦截和后续强制创建分别记使用信号。
 
 ### 4.2 写入流程（每次写入都是这些步骤）
 
@@ -131,7 +137,7 @@ create 在结构锁和页面锁内读取最新页面集合，准备并校验新�
 4. 计算新内容：维护 `updated`、`updated_by`、`created`（仅新建）、`sources`；`projects/<name>/` 下自动补 `project`。
 5. **敏感信息扫描**（§4.3），命中则拒绝写入，返回 `SECRET_DETECTED`（只说命中了哪类规则和行号，**不回显命中的内容**）。
 6. 原子写：写临时文件后 rename。
-7. 释放锁；把写入结果交给上层：更新检索索引 → 重新生成 `index.md` → 追加 `log.md` → git 提交（§4.4）。
+7. 释放锁；把写入结果交给上层：更新检索索引 → 重新生成 `index.md` → 追加当月 `log/YYYY-MM.md` → git 提交（§4.4）。
 
 ### 4.3 敏感信息扫描
 
@@ -139,11 +145,12 @@ create 在结构锁和页面锁内读取最新页面集合，准备并校验新�
 
 ### 4.4 git 与日志
 
-- 库是 git 仓库且 `git.autoCommit` 为真时，每次写入提交一次：只 `add` 本次涉及的文件（页面、`index.md`、`log.md`、移动/删除的源路径），提交信息 `[<agent>] <动作> <页面ID>：<reason>`，作者名 `<agent> (memwiki)`，邮箱 `<agent>@memwiki.local`。
+- 库是 git 仓库且 `git.autoCommit` 为真时，每次写入提交一次：只 `add` 本次涉及的文件（页面、`index.md`、当月 `log/YYYY-MM.md`、移动/删除的源路径），提交信息 `[<agent>] <动作> <页面ID>：<reason>`，作者名 `<agent> (memwiki)`，邮箱 `<agent>@memwiki.local`。日志 reason 和完整 git 提交说明超过 120 个 Unicode 字符时保留前 120 字并加“…”（不切断 Unicode 字符）。
 - 多个进程并发时 git 的 `index.lock` 冲突要退避重试（最多 5 次）。
 - 库外部的改动（人在 Obsidian 里编辑、AI 直接改文件）：文件监视发现后防抖 60 秒，统一提交 `[external] 外部编辑 N 个页面`。
 - **多机同步**：`git.autoPush` 开启且库配置了远程时，提交后防抖 30 秒执行一次 `git push`；推送失败（离线、被拒）只记录警告，不影响写入，下次再推。`dsh-memwiki sync` 手动同步：`git pull --rebase --autostash` 后 `push`；变基冲突时中止变基、保持本地不变，并列出冲突文件让用户或 AI 处理。git 同步凭据走 git 自己的凭据机制（凭据管理器、SSH key），本工具不托管这类凭据；低风险开发/测试凭据另见 §11。
-- `log.md` 每条包含完整 LogEntry 的 base64 注释供程序读取；仅含可见文字或损坏注释的行不作为日志条目。每次写入追加一行：`- 2026-10-14 20:31 [claude] 更新 [[projects/myapp/发布流程]]：补充打包时的 PATH 坑`。按月分节（`## 2026-10`），新的在最上面。
+- 日志每月一个 `log/YYYY-MM.md`，每条包含 LogEntry 的 base64 注释供程序读取（reason 已截断）；仅含可见文字或损坏注释的行不作为日志条目。每次写入只在月文件末尾追加一行：`- 2026-10-14 20:31 [claude] 更新 [[projects/myapp/发布流程]]：补充打包时的 PATH 坑`，不读取、排序或重写已有文件。readLog / memwiki_log 从最新月份往前读，月份内按时间倒序（同一时间后追加的在前），够 limit 就停。
+- 一次性迁移：停止库写入并备份后运行 `node scripts/split-log.mjs <vaultDir>`，将旧 `log.md` 拆进月文件并删除旧文件；已有月文件时拒绝覆盖。脚本独立分发，不进 lib/；运行时代码只读月度日志。
 
 ### 4.5 删除与回收站
 
@@ -155,7 +162,7 @@ create 在结构锁和页面锁内读取最新页面集合，准备并校验新�
 - 合并持有结构锁和按 ID 排序的页面锁，先解析所有引用、校验非空/不重复的 from、不包含 into、页面存在、目标 rev 一致；准备所有输出并完成元数据/敏感扫描后才开始写。校验失败时页面、目录、日志和 git 均不变。与已有 move 相同，跨文件 I/O 故障不是文件系统事务，不承诺断电回滚。
 - 源文件直接删除，不进回收站；源页标题和别名并入目标 aliases（大小写不敏感去重），源内容可从 git 历史查阅。磁盘、内存检索索引和目录均移除源 ID。
 - 全库正文中指向源 ID、标题、别名的双链复用 move 的 rewriteLinks 改写为目标 ID，保留显示文字、标题和空白，不碰代码内示例。目标的新正文也改写。一次 afterMutation 生成目录、一条日志、一次 git 提交：`[<agent>] merge A, B -> C：<reason>`。
-- `verify(ref, { note?, ctx })`：解析页面后取页面锁并重新读取，仅把 verified 设为本地今天，status=stale 时恢复 active；不改正文、updated、updated_by、sources 等字段，无需 rev。独立日志/提交的 reason 用 note（没有则 ctx.reason）。**AI 读到并核实过就调用 verify**；不能核实则保持 stale 并标待核实。过时判断继续使用 verified ?? updated。
+- `verify(ref, { note?, ctx })`：用于只核实不改内容的旧页；解析后取页面锁并重新读取，把 verified 设为本地今天，status=stale 时恢复 active；不改正文，无需 rev。来源仍遵守去重保留最新 10 条的写入约束；远程调用补签名身份来源，本地调用保留 updated/updated_by。独立日志/提交的 reason 用 note（没有则 ctx.reason）。同时改内容时用 write 的 verify 参数，刚写完不要再调 verify；不能核实则保持 stale 并标待核实。过时判断继续使用 verified ?? updated。
 
 ## 5. 检索
 
@@ -211,7 +218,7 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 | `invalid_meta` | 页头无法解析或必填字段缺失/取值非法 | 补齐可推断的默认值 |
 | `stale_candidate` | `verified`（没有则 `updated`）早于 `staleDays` 天 | 标记 `status: stale` |
 | `markdown_link` | 相对 Markdown 页面链接应改成双链；代码、图片和外部 URL 不检查 | 转换可表示的链接；越界路径等需手改 |
-| `oversized` | 正文超过 20 KB，建议拆分 | 否 |
+| `oversized` | 正文超过 20 × 1024 UTF-8 字节，建议拆分；meta/ 页面不限 | 否 |
 | `inbox_backlog` | inbox 条目超过 20 条或最早一条超过 14 天 | 否 |
 | `secret_suspect` | 已有内容命中敏感信息规则（外部编辑带进来的） | 否 |
 | `uncommitted` | 库里有未提交的改动 | 提交 |
@@ -260,11 +267,11 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 | `memwiki_context` | 返回精简上下文（§6.2），参数 `project?` |
 | `memwiki_search` | 检索（§5），参数 `query`、`type?`、`tags?`、`project?`、`limit?`(默认 8) |
 | `memwiki_read` | 读页面：页头、正文、rev、反向链接、断链、"记录于 N 天前"提示；参数 `page`（ID/标题/别名） |
-| `memwiki_write` | 写入（§4.1），参数 `page`、`mode`、`rev?`、`body?`/`text?`/`old?`/`new?`/`heading?`/`meta?`、`reason`、`source?` |
+| `memwiki_write` | 写入（§4.1），参数 `page`、`mode`、`rev?`、`body`（create/replace/section 必填）/`text?`/`old?`/`new?`/`heading?`/`meta?`、`reason`、`source?`、`verify?` 核实依据 |
 | `memwiki_remember` | 快速记录：追加到 `inbox/YYYY-MM.md`，同时返回最相关的 3 个已有页面，提示调用方考虑直接更新它们 |
 | `memwiki_move` | 改名/移动并改写链接 |
 | `memwiki_merge` | 参数 from[]、into、rev、body?、meta?、reason；合并并删除源文件，见 §4.6 |
-| `memwiki_verify` | 参数 page、note?；核实日期，stale 恢复 active，无需 rev |
+| `memwiki_verify` | 参数 page、note?；只核实旧页，stale 恢复 active，无需 rev；刚写完不要再调，写时用 verify 参数 |
 | `memwiki_feedback` | action=add（默认，kind/title/scenario/expected/actual）、list（all?）、resolve（id/resolution），见 §13 |
 | `memwiki_usage` | days? 默认 7，返回事件范围说明、各事件次数与零结果查询 Top 10 |
 | `memwiki_delete` / `memwiki_restore` | 删除到回收站 / 从回收站恢复 |
@@ -273,7 +280,7 @@ BM25F（k1=1.2，b=0.75），字段权重：`title` 4、`aliases` 3、`tags` 2.5
 
 - 服务端 `instructions`（DSH 会注入系统提示）仅保留核心摘要，不超过 1.5 KB；细则见 `_guide`，工具不好用时用 memwiki_feedback 记下。memwiki_write 可选 force（仅 create 使用），reason 必填。
 - `memwiki_write` 任何模式都可以顺手改 title/summary：顶层参数合并到 meta patch 并优先于同名 meta 字段。meta 必须是对象，其中 tags/aliases 必须是字符串数组，字段为 null 时删除；不符合字段契约的写入会被拒绝。meta 模式也可仅传 title/summary；append 使用 text 传正文，修改页头时必须带 rev。
-- MCP prompt：`memwiki-curate`：lint → 判断 overlap/fact_repeat 归属并 merge/edit → stale 核实后 verify、否则标待核实 → inbox 归档 → open 反馈和 usage 汇总（只汇报不改代码）→ 再次 lint。纠正优先于补充，只写当前正确说法，删除前确认已在归属页存在，不改写 git 历史。
+- MCP prompt：`memwiki-curate`：lint → 判断 overlap/fact_repeat 归属并 merge/edit → stale 核实（修改时用 verify 参数，只核实旧页才单独 verify）、否则标待核实 → inbox 归档 → open 反馈和 usage 汇总（只汇报不改代码）→ 再次 lint。纠正优先于补充，只写当前正确说法，删除前确认已在归属页存在，不改写 git 历史。
 - 写入方 ID 来自配置（`MEMWIKI_AGENT`），每个客户端配置各自的值。
 - 工具返回中文为主的纯文本（便于模型阅读），错误返回 `isError` 并带错误码。
 
@@ -313,7 +320,7 @@ src/
     lock.ts         页面锁（§4.2）                            T1
     store.ts        页面读写、移动、删除、恢复、列表（§4）    T1
     git.ts          提交与重试（§4.4）                        T1
-    log.ts          log.md 追加（§4.4）                       T1
+    log.ts          月度日志追加与按月读取（§4.4）             T1
     vault.ts        init、库标记校验（§2 §7）                 T1
   search/
     tokenize.ts     分词（§5.1）                              T2
@@ -372,4 +379,4 @@ T2 不依赖 T1 的实现：只用 `types.ts` 里的 `PageRecord`（已解析好
 
 `templates/vault/_guide.md` 是新库规范正文的唯一模板；运行时规则住在库内 `_guide`，AI 任务开始若没读过就读取它。回忆、写入、凭据取用四步、禁止项、维护与反馈细则全部在这里。`skills/memwiki/SKILL.md` 约 30 行，仅触发条件、核心五条和凭据/历史禁改摘要；MCP INSTRUCTIONS 同样摘要并指向 `_guide`。规则修改不用重装 skill，已有库不被代码升级静默覆盖。
 
-核心约定：一个事实一个归属；纠正优先于补充，发现旧说法不对直接改旧页；页面只写当前正确的说法；整页重复或被替代用 merge；读到并核实过就 verify；遇到可复现工具问题、规则不清或反复搜索缺口用 feedback，一次普通零结果、可通过正常重读解决的冲突不用记录反馈。整理时先确认信息已在归属页再删源内容，禁止改写 git 历史。工具行为与代码改进只汇报，由另行确认的实现任务处理。
+核心约定：一个事实一个归属；纠正优先于补充，发现旧说法不对直接改旧页；页面只写当前正确的说法；整页重复或被替代用 merge；写入时用 verify 参数顺带核实，只核实旧页才单独 verify；遇到可复现工具问题、规则不清或反复搜索缺口用 feedback，一次普通零结果、可通过正常重读解决的冲突不用记录反馈。整理时先确认信息已在归属页再删源内容，禁止改写 git 历史。工具行为与代码改进只汇报，由另行确认的实现任务处理。

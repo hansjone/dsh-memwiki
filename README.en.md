@@ -65,7 +65,7 @@ Precedence: CLI > env > vault `memwiki.json` `settings` > defaults.
 | `memwiki_remember` | Quick inbox capture + related pages |
 | `memwiki_move` | Rename/move and rewrite links |
 | `memwiki_merge` | Merge into one owner, rewrite links, delete source files and transfer titles/aliases; optional body/meta and required target rev |
-| `memwiki_verify` | Refresh verified date and restore stale to active, without rev |
+| `memwiki_verify` | Verify an existing page without content changes or rev; use write's verify parameter when editing |
 | `memwiki_feedback` | add/list/resolve monthly tool and rule feedback |
 | `memwiki_usage` | Local event counts and Top 10 zero-result queries |
 | `memwiki_delete` / `memwiki_restore` | Trash / restore |
@@ -97,7 +97,13 @@ dsh-memwiki install-skill [--target ...]
 
 ## Vault format
 
-Markdown + YAML frontmatter + `[[wikilinks]]`; status is `active` or `stale`. Lint reports relative Markdown page links as `markdown_link`; `fix: true` converts them to vault-relative wikilinks, resolving paths relative to the current page and preserving labels/headings. Run lint fixes before move/merge so these references participate in backlinks, broken-link checks and rewrites. MCP meta must be an object, tags/aliases must be string arrays, and append takes text. Layout: [docs/DESIGN.md](docs/DESIGN.md) §2–§3. Do not hand-edit generated `index.md` / `log.md`.
+Markdown + YAML frontmatter + `[[wikilinks]]`; status is `active` or `stale`. Lint reports relative Markdown page links as `markdown_link`; `fix: true` converts them to vault-relative wikilinks, resolving paths relative to the current page and preserving labels/headings. Run lint fixes before move/merge so these references participate in backlinks, broken-link checks and rewrites. MCP meta must be an object, tags/aliases must be string arrays, and append takes text. Layout: [docs/DESIGN.md](docs/DESIGN.md) §2–§3. Do not hand-edit generated `index.md` / `log/YYYY-MM.md`.
+
+`create`, `replace` and `section` require an explicit string `body`; omission returns `INVALID_META`. All MCP tools reject unknown arguments and name the fields. Pass `verify: "verification evidence"` to `memwiki_write` to set verified to today and restore stale to active in the same write, with one log entry and one git commit. Do not call `memwiki_verify` again immediately after writing; it is for verifying existing pages without editing them.
+
+Bodies above 20 KB (UTF-8 bytes) return `PAGE_TOO_LARGE` and must be split. Writes that reduce the body size and pages under `meta/` are exempt; metadata-only edits remain available for oversized pages. Sources are deduplicated, keeping the ten latest entries with new ones last. Logs append to monthly files; `memwiki_log` reads newest months first and stops once limit is reached. Log reasons and git commit messages longer than 120 Unicode characters keep the first 120 followed by “…”.
+
+For an existing vault, stop writes and back it up, then run `node scripts/split-log.mjs <vaultDir>` once to split and delete the old `log.md`. Runtime code reads monthly logs only.
 
 ## FAQ
 

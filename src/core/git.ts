@@ -6,6 +6,7 @@ import path from 'node:path'
 import { safeResolve } from './ids.ts'
 import { withLock } from './lock.ts'
 import { remoteActor } from './actor.ts'
+import { shortDescription } from './limits.ts'
 
 const exec = promisify(execFile)
 async function git(dir: string, args: string[]): Promise<string> {
@@ -64,7 +65,7 @@ export async function commit(dir: string, paths: string[], opts: { agent: string
         const author = actor ? `${actor.name} (${actor.sub})`.replace(/[<>\r\n]/g, '') : `${opts.agent} (memwiki)`
         const email = actor ? `${encodeURIComponent(actor.sub)}@memwiki.local` : `${opts.agent}@memwiki.local`
         const identity = ['-c', `user.name=${author}`, '-c', `user.email=${email}`]
-        await git(dir, [...identity, 'commit', ...(actor ? [`--author=${author} <${email}>`] : []), '--only', '-m', opts.message, '--', ...literal])
+        await git(dir, [...identity, 'commit', ...(actor ? [`--author=${author} <${email}>`] : []), '--only', '-m', shortDescription(opts.message), '--', ...literal])
         return (await git(dir, ['rev-parse', 'HEAD'])).trim()
       } catch (e) {
         const err = e as Error & { stderr?: string }

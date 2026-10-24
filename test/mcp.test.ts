@@ -4,20 +4,20 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { initVault } from '../src/core/vault.ts'
 import { Memwiki } from '../src/memwiki.ts'
-import { createMemwikiServer } from '../src/mcp/server.ts'
+import { createMemwikiServer, type ServerOptions } from '../src/mcp/server.ts'
 import { temporary, config } from './helpers.ts'
 import { SecretStore } from '../src/secrets/store.ts'
 import { plainProtector } from '../src/secrets/protector.ts'
 import path from 'node:path'
 
-async function connect(t: Parameters<typeof temporary>[0]) {
+async function connect(t: Parameters<typeof temporary>[0], options: ServerOptions = {}) {
   const dir = await temporary(t)
   await initVault(dir, { git: false })
   const wiki = await Memwiki.open({ ...config(dir), agent: 'cursor', git: { autoCommit: false, autoPush: false } })
   t.after(() => wiki.close())
   const secretsDir = await temporary(t)
   const secrets = new SecretStore({ file: path.join(secretsDir, 'secrets.json'), protector: plainProtector, vaultDir: dir })
-  const server = createMemwikiServer(wiki, secrets)
+  const server = createMemwikiServer(wiki, secrets, options)
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: 'test', version: '0.0.0' })
   await server.connect(serverTransport)
@@ -100,6 +100,62 @@ test('MCP tools cover happy path and error codes', async t => {
   assert.match(missing.text, /^NOT_FOUND/)
 })
 
+test('MCP rejects unknown arguments on every tool and missing body without clearing content', async t => {
+  const { client, wiki } = await connect(t)
+  const listed = await client.listTools()
+  for (const tool of listed.tools) {
+    assert.equal(tool.inputSchema.additionalProperties, false, tool.name)
+    const props = tool.inputSchema.properties as Record<string, { type?: string; enum?: unknown[] }>
+    const args: Record<string, unknown> = { unknown_typo: true }
+    for (const key of tool.inputSchema.required ?? []) {
+      args[key] = props[key].enum?.[0] ?? (props[key].type === 'array' ? ['topics/body'] : 'test')
+    }
+    const response = await call(client, tool.name, args)
+    assert.equal(response.isError, true, tool.name)
+    assert.match(response.text, /unknown_typo/)
+  }
+  const create = { page: 'topics/body', mode: 'create', title: '正文校验', summary: '防止缺正文清空', reason: '测试' }
+  const missingCreate = await call(client, 'memwiki_write', create)
+  assert.match(missingCreate.text, /INVALID_META.*create\/replace 需要 body/)
+  assert.equal(missingCreate.isError, true)
+  assert.equal((await call(client, 'memwiki_write', { ...create, body: '保留正文\n', verify: '已读测试' })).isError, false)
+  const original = (await wiki.read(create.page)).page
+  assert.ok(original.meta.verified)
+  for (const mode of ['replace', 'section']) {
+    const args = { page: create.page, mode, rev: original.rev, heading: '章节', reason: '测试' }
+    const missing = await call(client, 'memwiki_write', args)
+    assert.match(missing.text, /INVALID_META.*需要 body/)
+    assert.equal(missing.isError, true)
+    const typo = await call(client, 'memwiki_write', { ...args, content: '误传正文' })
+    assert.match(typo.text, /content/)
+    assert.equal(typo.isError, true)
+    assert.equal((await wiki.read(create.page)).page.rev, original.rev)
+  }
+  const replace = await call(client, 'memwiki_write', { page: create.page, mode: 'replace', rev: original.rev, body: '替换后正文\n', reason: '正常替换', verify: '对照内容' })
+  assert.equal(replace.isError, false)
+  assert.equal((await wiki.read(create.page)).page.body, '替换后正文\n')
+  const empty = await call(client, 'memwiki_write', { page: create.page, mode: 'replace', rev: (await wiki.read(create.page)).page.rev, body: '', reason: '明确清空' })
+  assert.equal(empty.isError, false)
+  assert.equal((await wiki.read(create.page)).page.body, '')
+})
+
+test('MCP missing body is rejected before remote proposal interception', async t => {
+  let proposals = 0
+  const { client } = await connect(t, { remote: true, runTool: async () => {
+    proposals++
+    return { content: [{ type: 'text', text: '已提交待审' }] }
+  } })
+  for (const mode of ['create', 'replace', 'section']) {
+    const missing = await call(client, 'memwiki_write', { mode, page: 'topics/missing', reason: '测试' })
+    assert.equal(missing.isError, true)
+    assert.match(missing.text, /INVALID_META.*需要 body/)
+  }
+  assert.equal(proposals, 0)
+  const valid = await call(client, 'memwiki_write', { mode: 'create', page: 'topics/proposal', title: '提议', summary: '待审', body: '正文', reason: '测试' })
+  assert.equal(valid.isError, false)
+  assert.equal(proposals, 1)
+})
+
 test('MCP four secret tools protect metadata outputs, require purpose and redirect rejected wiki writes', async t => {
   const { client, secrets } = await connect(t)
   const tools = await client.listTools()
@@ -135,7 +191,7 @@ test('maintenance MCP tools and curate prompt are registered and work through tr
   const { client, wiki } = await connect(t)
   const names = (await client.listTools()).tools.map(tool => tool.name)
   for (const name of ['memwiki_merge', 'memwiki_verify', 'memwiki_feedback', 'memwiki_usage']) assert.ok(names.includes(name))
-  assert.equal(client.getServerVersion()?.version, '0.3.0')
+  assert.equal(client.getServerVersion()?.version, '0.4.0')
   const prompts = await client.listPrompts()
   assert.deepEqual(prompts.prompts.map(prompt => prompt.name), ['memwiki-curate'])
   const searchSchema = (await client.listTools()).tools.find(tool => tool.name === 'memwiki_search')!.inputSchema

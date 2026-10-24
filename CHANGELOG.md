@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.3.0（未发布）
+## 0.4.0（未发布）
+
+- 修复 create/replace/section 缺 body 时静默清空正文：必须显式传字符串，缺失报 INVALID_META；所有 MCP 工具严格拒绝未知参数。
+- memwiki_write 新增 verify 核实依据，同次写入刷新 verified、恢复 stale，只记一条日志和一个提交；独立 verify 只用于不改内容的旧页。
+- sources 去重后保留最新 10 条，包含远程签名身份来源。
+- 日志改为 log/YYYY-MM.md，只追加；读取从最新月份开始，够 limit 即停。reason 和 git 提交说明超过 120 字截断加“…”；提供 scripts/split-log.mjs 一次性迁移脚本。
+- 正文写入硬上限 20 KB，超限报 PAGE_TOO_LARGE；允许缩小超大正文，meta/ 页面不限，lint 阈值一致。
+- 库模板忽略 .obsidian/graph.json，规则、接口说明与中英文文档同步。
+
+## 0.3.0
 
 - 破坏性变化：merge 直接删除源文件、迁移标题/别名并改写双链；移除 superseded/superseded_by、draft、includeSuperseded 及相关体检项。
 - 破坏性变化：维护 prompt 仅留 memwiki-curate；元数据错误仅用结构化 metaIssues；MCP meta 只接受对象，tags/aliases 只接受字符串数组，append 使用 text；运行配置 git.autoPush 必填；日志仅读取带结构化注释的条目，restore 只接受时间戳回收站路径。
